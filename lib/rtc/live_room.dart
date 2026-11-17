@@ -127,13 +127,22 @@ class ClassPip {
     _wired = true;
     _Native._ch.setMethodCallHandler((c) async {
       if (c.method == 'pipChanged') inPip.value = c.arguments == true;
+      // 🍏 iPhone: a phone call / Siri / alarm stopped the class sound and now
+      // it's over → put the class sound back (speaker / ear / Bluetooth + volume)
+      if (c.method == 'soundBack') {
+        final call = ClassSound._call;
+        if (call != null && !call._inCall) {
+          await ClassSound._apply();
+          await call._applyGain();
+        }
+      }
       return null;
     });
   }
 
   /// In class → leaving the app shows the small window. Class over → normal again.
   static Future<void> _allow(bool on) async {
-    if (!_isAndroid || on == _allowed) return;
+    if (!_isMobile || on == _allowed) return;
     _allowed = on;
     _wire();
     try {
@@ -144,7 +153,7 @@ class ClassPip {
   }
 
   static void _update(Call c, lk.Room? room) {
-    if (!_isAndroid || !_allowed || room == null) return;
+    if (!_isMobile || !_allowed || room == null) return;
     micOn.value = room.localParticipant?.isMicrophoneEnabled() ?? false;
     onCall.value = c._inCall;
     String who = '';
@@ -155,6 +164,17 @@ class ClassPip {
       }
     }
     speaking.value = who;
+    if (_isIOS) _sendIos();
+  }
+
+  // 🍏 iPhone small window draws itself natively → send it the text (only on change)
+  static String _lastIos = '';
+  static void _sendIos() {
+    final info = {'mic': micOn.value, 'speaking': speaking.value, 'onCall': onCall.value};
+    final key = info.toString();
+    if (key == _lastIos) return;
+    _lastIos = key;
+    unawaited(_Native._ch.invokeMethod('pipInfo', info).catchError((_) => null));
   }
 }
 
@@ -181,7 +201,7 @@ class _Native {
   static Future<({bool inCall, int mode})> callState({
     required bool myMicOn,
   }) async {
-    if (!_isAndroid) return (inCall: false, mode: -1);
+    if (!_isMobile) return (inCall: false, mode: -1);
     try {
       final m = await _ch.invokeMethod<Map<dynamic, dynamic>>('callState', {
         'micOn': myMicOn,
@@ -269,6 +289,7 @@ class ClassSound {
     _call = null;
     _poll?.cancel();
     _poll = null;
+    if (_isIOS) unawaited(_appleRelease()); // 🍏 class over → give the sound back to other apps
   }
 
   static String label(SoundOut o) {
@@ -373,6 +394,10 @@ class ClassSound {
   static Future<void> _apply() async {
     final room = _call?._room;
     if (room == null || !supported) return;
+    if (_isIOS) {
+      await _appleApply();
+      return;
+    }
     try {
       switch (route.value) {
         case SoundOut.speaker:
@@ -393,6 +418,61 @@ class ClassSound {
     }
   }
 }
+
+// -------------------------------------------------------------------------
+// 🍏 iPhone sound route
+// LiveKit on iPhone puts a LISTENING student (mic off) into "music" mode:
+// sound always comes from the loud speaker, Speaker / Phone (ear) does nothing.
+// In class we keep the iPhone in "call" mode instead, so:
+//   Speaker    → loud speaker (even with Bluetooth connected)
+//   Phone (ear)→ ear speaker, like a phone call
+//   Bluetooth / headphones → there; if they disconnect → loud speaker
+// Apple's own echo + noise cancellation work in this mode too.
+// -------------------------------------------------------------------------
+class _AppleSound {
+  static bool _manual = false;
+
+  static Future<void> apply() async {
+    final r = ClassSound.route.value;
+    final ear = r == SoundOut.phone;
+    final speaker = r == SoundOut.speaker;
+    try {
+      final apple = lk.AppleAudioSessionConfiguration(
+        category: lk.AppleAudioCategory.playAndRecord,
+        categoryOptions: {
+          lk.AppleAudioCategoryOption.allowBluetooth,
+          lk.AppleAudioCategoryOption.allowBluetoothA2DP,
+          if (!ear) lk.AppleAudioCategoryOption.defaultToSpeaker,
+        },
+        mode: ear ? lk.AppleAudioMode.voiceChat : lk.AppleAudioMode.videoChat,
+      );
+      _manual = true;
+      await lk.AudioManager.instance.setAudioSessionOptions(
+        lk.AudioSessionOptions.communication(apple: apple),
+      );
+      // Speaker = always the loud speaker (also over Bluetooth); ear = no override
+      await lk.AudioManager.instance.setSpeakerOutputPreferred(!ear, force: speaker);
+    } catch (e) {
+      debugPrint('iPhone sound route error: $e');
+    }
+  }
+
+  static Future<void> release() async {
+    if (!_manual) return;
+    _manual = false;
+    try {
+      await lk.AudioManager.instance.deactivateAudioSession();
+    } catch (_) {}
+    try {
+      await lk.AudioManager.instance.setAudioSessionManagementMode(
+        lk.AudioSessionManagementMode.automatic,
+      );
+    } catch (_) {}
+  }
+}
+
+Future<void> _appleApply() => _AppleSound.apply();
+Future<void> _appleRelease() => _AppleSound.release();
 
 // -------------------------------------------------------------------------
 // Small types with the old names
@@ -887,7 +967,7 @@ class Call {
   // 📞 Calls: every 2 s look if the phone is in a call
   // -------------------------------------------------------------------
   void _startCallWatch() {
-    if (!_isAndroid || _callWatch != null) return;
+    if (!_isMobile || _callWatch != null) return;
     _callWatch = Timer.periodic(
       const Duration(seconds: 2),
       (_) => _checkCall(),
