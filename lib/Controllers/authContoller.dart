@@ -447,6 +447,7 @@ body: jsonEncode({
 "mode": selectedMode,
 "batchTime": selectedBatch.value,
 "otpToken": otpToken, // 🔐 proof that this phone number was verified
+"app": "student",
 }),
 );
 
@@ -509,6 +510,7 @@ try {
     body: jsonEncode({
       "phone": loginPhoneController.text.trim(),
       "password": loginPasswordController.text,
+      "app": "student", // 👥 trainer's number → open the STUDENT account
     }),
   );
 
@@ -608,6 +610,7 @@ try {
       "phone": forgotPhoneController.text.trim(),
       "newPassword": newPasswordController.text,
       "otpToken": otpToken,
+      "app": "student", // 👥 only the student account's password changes
     }),
   );
 
@@ -682,6 +685,19 @@ String _sig(dynamic v) => v == null ? '' : jsonEncode(v);
 
 /// (title, message) for a change the student should see, or null to stay quiet
 (String, String)? _changeMessage(Map<String, dynamic> b, Map<String, dynamic> a) {
+  // 🚪 dropout / rejoin
+  if (b['isDropout'] != true && a['isDropout'] == true) {
+    return ("Classes paused", "Your live classes are paused. Your study material stays open. Contact the institute to rejoin.");
+  }
+  if (b['isDropout'] == true && a['isDropout'] != true) {
+    return ("Welcome back! 🎉", "Your classes are open again.");
+  }
+  // 🎓 promoted: a stage became "finished" and a new stage opened
+  final doneBefore = _stagesOn(b['englishDone']) + _stagesOn(b['hindiDone']);
+  final doneAfter = _stagesOn(a['englishDone']) + _stagesOn(a['hindiDone']);
+  if (doneAfter > doneBefore) {
+    return ("Promoted 🎉", "Congratulations! Your new stage is open. Old stage material stays open for revision.");
+  }
   final stagesBefore = _stagesOn(b['englishAccess']) + _stagesOn(b['hindiAccess']);
   final stagesAfter = _stagesOn(a['englishAccess']) + _stagesOn(a['hindiAccess']);
   if (stagesAfter > stagesBefore) {

@@ -62,11 +62,11 @@ class StudentClassChat {
       case 'hand_ok':
         _setHand(false);
         HapticFeedback.heavyImpact();
-        onNotice?.call('Your teacher says: speak now! Tap the mic 🎤', 'ok');
+        onNotice?.call('Your trainer says: speak now! Tap the mic 🎤', 'ok');
         break;
       case 'hand_down':
         _setHand(false);
-        onNotice?.call('Your teacher lowered your hand.', 'down');
+        onNotice?.call('Your trainer lowered your hand.', 'down');
         break;
       case 'msg':
         final text = (s.data['text'] ?? '').toString().trim();
@@ -76,7 +76,10 @@ class StudentClassChat {
         if (messages.length > 200) messages.removeAt(0);
         if (!chatOpen) {
           unread.value++;
-          onNotice?.call('${private ? 'Teacher (to you)' : 'Teacher'}: $text', 'msg');
+          onNotice?.call(
+            '${private ? 'Trainer (to you)' : 'Trainer'}: $text',
+            'msg',
+          );
         }
         break;
     }
@@ -87,7 +90,10 @@ class StudentClassChat {
     _resend?.cancel();
     if (up) {
       // trainer may join late / reconnect → remind every 20 s while the hand is up
-      _resend = Timer.periodic(const Duration(seconds: 20), (_) => _sendHand(true));
+      _resend = Timer.periodic(
+        const Duration(seconds: 20),
+        (_) => _sendHand(true),
+      );
     }
   }
 
@@ -102,7 +108,8 @@ class StudentClassChat {
     final c = _call;
     if (c == null) return 'You are not in a class.';
     final up = !handUp.value;
-    if (up && c.staffIds.isEmpty) return 'Your teacher is not in the class right now.';
+    if (up && c.staffIds.isEmpty)
+      return 'Your trainer is not in the class right now.';
     final ok = await _sendHand(up);
     if (!ok && up) return 'Could not raise your hand. Check your internet.';
     _setHand(up);
@@ -114,7 +121,8 @@ class StudentClassChat {
     final c = _call;
     final t = text.trim();
     if (c == null || t.isEmpty) return null;
-    if (c.staffIds.isEmpty) return 'Your teacher is not in the class right now.';
+    if (c.staffIds.isEmpty)
+      return 'Your trainer is not in the class right now.';
     final ok = await c.sendSignal({'t': 'msg', 'text': t}, to: c.staffIds);
     if (!ok) return 'Could not send. Check your internet.';
     messages.add(StudentChatMsg(t, true, false, DateTime.now()));
@@ -133,7 +141,9 @@ Future<void> showStudentChatSheet(BuildContext context) async {
     context: context,
     isScrollControlled: true,
     backgroundColor: Get.isDarkMode ? AppColors.darkSurface : Colors.white,
-    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+    ),
     builder: (_) => const _StudentChatSheet(),
   );
   chat.chatOpen = false;
@@ -156,7 +166,8 @@ class _StudentChatSheetState extends State<_StudentChatSheet> {
 
   bool get isDark => Get.isDarkMode;
   Color get textColor => isDark ? AppColors.darkText : AppColors.text;
-  Color get secondary => isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
+  Color get secondary =>
+      isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
 
   @override
   void initState() {
@@ -176,8 +187,11 @@ class _StudentChatSheetState extends State<_StudentChatSheet> {
   void _toBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
-        _scroll.animateTo(_scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
       }
     });
   }
@@ -198,7 +212,9 @@ class _StudentChatSheetState extends State<_StudentChatSheet> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
       child: SafeArea(
         child: SizedBox(
           height: MediaQuery.of(context).size.height * .65,
@@ -208,23 +224,38 @@ class _StudentChatSheetState extends State<_StudentChatSheet> {
               Container(
                 width: 40,
                 height: 4,
-                decoration: BoxDecoration(color: secondary.withOpacity(.3), borderRadius: BorderRadius.circular(4)),
+                decoration: BoxDecoration(
+                  color: secondary.withOpacity(.3),
+                  borderRadius: BorderRadius.circular(4),
+                ),
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
                 child: Row(
                   children: [
-                    Icon(Icons.chat_bubble_rounded, color: AppColors.navy, size: 20),
+                    Icon(
+                      Icons.chat_bubble_rounded,
+                      color: AppColors.navy,
+                      size: 20,
+                    ),
                     const SizedBox(width: 8),
-                    Text('Ask your teacher',
-                        style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w800, color: textColor)),
+                    Text(
+                      'Ask your trainer',
+                      style: GoogleFonts.poppins(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: textColor,
+                      ),
+                    ),
                   ],
                 ),
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
-                child: Text('Only your teacher sees your message.',
-                    style: GoogleFonts.poppins(fontSize: 11.5, color: secondary)),
+                child: Text(
+                  'Only your trainer sees your message.',
+                  style: GoogleFonts.poppins(fontSize: 11.5, color: secondary),
+                ),
               ),
               Divider(height: 1, color: secondary.withOpacity(.2)),
               Expanded(
@@ -232,9 +263,14 @@ class _StudentChatSheetState extends State<_StudentChatSheet> {
                   final list = chat.messages.toList();
                   if (list.isEmpty) {
                     return Center(
-                      child: Text('No messages yet.\nType your doubt below.',
-                          textAlign: TextAlign.center,
-                          style: GoogleFonts.poppins(color: secondary, fontSize: 12.5)),
+                      child: Text(
+                        'No messages yet.\nType your doubt below.',
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.poppins(
+                          color: secondary,
+                          fontSize: 12.5,
+                        ),
+                      ),
                     );
                   }
                   return ListView.builder(
@@ -244,32 +280,48 @@ class _StudentChatSheetState extends State<_StudentChatSheet> {
                     itemBuilder: (_, i) {
                       final m = list[i];
                       return Align(
-                        alignment: m.mine ? Alignment.centerRight : Alignment.centerLeft,
+                        alignment: m.mine
+                            ? Alignment.centerRight
+                            : Alignment.centerLeft,
                         child: Container(
                           margin: const EdgeInsets.only(bottom: 8),
-                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .75),
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.of(context).size.width * .75,
+                          ),
                           padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
                           decoration: BoxDecoration(
                             color: m.mine
                                 ? AppColors.navy
-                                : (isDark ? Colors.white.withOpacity(.08) : const Color(0xFFF2F5F9)),
+                                : (isDark
+                                      ? Colors.white.withOpacity(.08)
+                                      : const Color(0xFFF2F5F9)),
                             borderRadius: BorderRadius.circular(14),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                m.mine ? 'You' : (m.private ? 'Teacher (only to you)' : 'Teacher'),
+                                m.mine
+                                    ? 'You'
+                                    : (m.private
+                                          ? 'Trainer (only to you)'
+                                          : 'Trainer'),
                                 style: GoogleFonts.poppins(
                                   fontSize: 10,
                                   fontWeight: FontWeight.w700,
-                                  color: m.mine ? Colors.white70 : AppColors.success,
+                                  color: m.mine
+                                      ? Colors.white70
+                                      : AppColors.success,
                                 ),
                               ),
                               const SizedBox(height: 2),
-                              Text(m.text,
-                                  style: GoogleFonts.poppins(
-                                      fontSize: 13, color: m.mine ? Colors.white : textColor)),
+                              Text(
+                                m.text,
+                                style: GoogleFonts.poppins(
+                                  fontSize: 13,
+                                  color: m.mine ? Colors.white : textColor,
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -288,30 +340,49 @@ class _StudentChatSheetState extends State<_StudentChatSheet> {
                         maxLength: 300,
                         minLines: 1,
                         maxLines: 3,
-                        style: GoogleFonts.poppins(fontSize: 13, color: textColor),
+                        style: GoogleFonts.poppins(
+                          fontSize: 13,
+                          color: textColor,
+                        ),
                         textInputAction: TextInputAction.send,
                         onSubmitted: (_) => _send(),
                         decoration: InputDecoration(
                           counterText: '',
                           hintText: 'Type your doubt…',
-                          hintStyle: GoogleFonts.poppins(fontSize: 13, color: secondary),
+                          hintStyle: GoogleFonts.poppins(
+                            fontSize: 13,
+                            color: secondary,
+                          ),
                           filled: true,
-                          fillColor: isDark ? Colors.white.withOpacity(.06) : const Color(0xFFF2F5F9),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          fillColor: isDark
+                              ? Colors.white.withOpacity(.06)
+                              : const Color(0xFFF2F5F9),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 10,
+                          ),
                           border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(22), borderSide: BorderSide.none),
+                            borderRadius: BorderRadius.circular(22),
+                            borderSide: BorderSide.none,
+                          ),
                         ),
                       ),
                     ),
                     const SizedBox(width: 6),
                     IconButton.filled(
-                      style: IconButton.styleFrom(backgroundColor: AppColors.navy),
+                      style: IconButton.styleFrom(
+                        backgroundColor: AppColors.navy,
+                      ),
                       onPressed: _sending ? null : _send,
                       icon: _sending
                           ? const SizedBox(
                               width: 18,
                               height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
                           : const Icon(Icons.send_rounded, color: Colors.white),
                     ),
                   ],

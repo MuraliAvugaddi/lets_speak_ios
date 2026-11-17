@@ -12,6 +12,7 @@ import 'package:lets_talk/Screens/MainNavigationScreen.dart';
 import 'package:lets_talk/Screens/class_hand_chat.dart';
 import 'package:lets_talk/rtc/live_room.dart'; // 🎧 LiveKit audio classes (same names as before)
 import 'package:lets_talk/rtc/live_room.dart' as svf show Priority;
+import 'package:lets_talk/rtc/class_sound.dart'; // 🔊 speaker / phone / Bluetooth + trainer logo
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:lets_talk/Controllers/authContoller.dart';
 import 'package:lets_talk/apis/api_endpoint.dart';
@@ -238,13 +239,19 @@ class GlobalAudioOverlayController {
     String className, {
     LiveSessionWidget? widgetRef,
   }) {
-    if (_overlayEntry != null) return;
+    // already showing → nothing to do (an old, detached bubble is cleared)
+    if (_overlayEntry != null && _overlayEntry!.mounted) return;
+    _overlayEntry = null;
+
+    // 🫧 Put the bubble on the APP's main overlay (not the class screen's),
+    // so it stays when the class screen closes (back button / back swipe).
+    final overlayState = Get.key.currentState?.overlay ?? Overlay.maybeOf(context, rootOverlay: true);
+    if (overlayState == null) return;
+
     currentCall = call;
     currentUserId = userId;
     currentClassName = className;
     activeWidgetRef = widgetRef;
-
-    final overlayState = Overlay.of(context);
 
     _overlayEntry = OverlayEntry(
       builder: (context) => const FloatingAudioPiPWidget(),
@@ -1493,7 +1500,6 @@ class StudentAudioRoomScreen extends StatefulWidget {
 class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
     with WidgetsBindingObserver {
   bool isToggling = false;
-  bool _isAppSwitchWarningShown = false;
   bool _isPoorConnection = false;
   bool _isExiting = false;
   bool _seenSelf = false;
@@ -1560,6 +1566,7 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
     _netTimer?.cancel();
     _missingTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
+    _bubbleIfStillInClass(); // 🫧 class still running → bubble on the home page
     super.dispose();
   }
 
@@ -1575,8 +1582,8 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
       return;
     }
 
-    // ⚡ LiveKit already retried the connection itself — "disconnected" is final
-    // (removed by the trainer / room closed / network gone). Leave now, no 5 s wait.
+    // ⚡ "disconnected" is final: removed by the trainer / class closed / no internet
+    // for 3 minutes (shorter drops are fixed by joining again by itself).
     if (s.status.isDisconnected) {
       _handleClassExit(message: "You were removed from the class or the connection was lost.");
       return;
@@ -1585,6 +1592,12 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
     final me = s.callParticipants.firstWhereOrNull(
       (p) => p.userId == widget.userId,
     );
+    // 🛟 joining again after a network drop → nobody is "missing", just wait
+    if (!s.status.isConnected) {
+      _missingTimer?.cancel();
+      _missingTimer = null;
+      return;
+    }
     if (me != null) {
       _seenSelf = true;
       _missingTimer?.cancel();
@@ -1784,75 +1797,9 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-
-    if (state == AppLifecycleState.paused) {
-      if (!_isAppSwitchWarningShown && mounted) {
-        _isAppSwitchWarningShown = true;
-
-        Get.dialog(
-          AlertDialog(
-            backgroundColor: cardColor,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: const BorderSide(color: Colors.redAccent, width: 1),
-            ),
-            title: Text(
-              "⚠️ Leaving class?",
-              style: GoogleFonts.poppins(
-                color: roomText,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-            content: Text(
-              "Switching to another app can disturb your live class. Do you want to exit the class?",
-              style: GoogleFonts.poppins(
-                color: roomSecondary,
-                fontSize: 13,
-                height: 1.4,
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Get.back();
-                  _isAppSwitchWarningShown = false;
-                },
-                child: Text(
-                  "Stay in Class",
-                  style: GoogleFonts.poppins(
-                    color: accent,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-                onPressed: () async {
-                  Get.back();
-                  await _handleClassExit();
-                },
-                child: Text(
-                  "Exit Class",
-                  style: GoogleFonts.poppins(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          barrierDismissible: false,
-        );
-      }
-    } else if (state == AppLifecycleState.resumed) {
-      _isAppSwitchWarningShown = false;
-    }
+    // 🛟 Other app / WhatsApp / phone call: the class keeps running in the
+    // background (no "Leaving class?" popup any more). Back → refresh the screen.
+    if (state == AppLifecycleState.resumed && mounted) setState(() {});
   }
 
   Future<void> _toggleMic(bool isCurrentlyMuted, bool canSpeak) async {
@@ -1875,8 +1822,13 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
     }
   }
 
+  // 🫧 Minimize: back button, back SWIPE (left or right edge), arrow or
+  // "Minimize" → bubble first, then home. The class keeps running.
+  bool _minimizing = false;
+
   void _minimize() {
-    Get.until((route) => route.isFirst);
+    if (_minimizing || _isExiting) return;
+    _minimizing = true;
     GlobalAudioOverlayController.showOverlay(
       context,
       widget.call,
@@ -1884,6 +1836,30 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
       "Live Class",
       widgetRef: widget.widgetRef,
     );
+    // go home on the next frame (never in the middle of the back gesture)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Get.until((route) => route.isFirst);
+    });
+  }
+
+  /// Safety net: the class screen closed some other way while the class is
+  /// still running → show the bubble anyway, so the student can always get back.
+  void _bubbleIfStillInClass() {
+    if (_isExiting || ClassSwitcher.isSwitching(widget.call)) return;
+    if (!StreamManager.inCall || GlobalAudioOverlayController.currentCall != null) return;
+    final s = widget.call.state.value;
+    if (s.endedAt != null || s.status.isDisconnected) return;
+    final call = widget.call;
+    final userId = widget.userId;
+    final ref = widget.widgetRef;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (GlobalAudioOverlayController.currentCall != null || !StreamManager.inCall) return;
+      final st = call.state.value;
+      if (st.endedAt != null || st.status.isDisconnected) return;
+      final ctx = Get.overlayContext ?? Get.context;
+      if (ctx == null) return;
+      GlobalAudioOverlayController.showOverlay(ctx, call, userId, "Live Class", widgetRef: ref);
+    });
   }
 
   void _confirmLeaveClass() {
@@ -2000,6 +1976,11 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
               ),
             ],
           ),
+          actions: [
+            // 🔊 Speaker / Phone (ear) / Bluetooth / Headphones + volume
+            ClassSoundButton(color: roomText),
+            const SizedBox(width: 6),
+          ],
         ),
         body: StreamBuilder<CallState>(
           stream: widget.call.state.asStream(),
@@ -2058,11 +2039,15 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
                           "Joined another timing — your batch is ${BatchSlots.shortOf(_outsideBatchOwn, fallback: 'another time')}. Attendance counted.",
                           AppColors.warning,
                         ),
+                      // 🛟 connection lost → the app joins the class again by itself
                       if (callState.status.isReconnecting)
-                        _banner(Icons.sync_rounded, "Reconnecting…", Colors.orange.shade700)
-                      else if (_isPoorConnection)
-                        _banner(Icons.wifi_off_rounded,
-                            "Your internet is unstable.", Colors.orange.shade800),
+                        _banner(Icons.sync_rounded, "Connection lost — joining your class again…", Colors.orange.shade700)
+                      else if (_isPoorConnection || (me?.weakNet ?? false))
+                        _banner(Icons.signal_wifi_bad_rounded,
+                            "Your internet is weak. The voice may break — move to a better signal.", Colors.orange.shade800)
+                      else if (teachers.any((t) => t.weakNet))
+                        _banner(Icons.signal_wifi_bad_rounded,
+                            "Trainer's internet is weak. The voice may break for a moment.", Colors.orange.shade800),
                       Expanded(
                         child: ListView(
                           physics: const BouncingScrollPhysics(),
@@ -2301,7 +2286,8 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
       ),
       child: Row(
         children: [
-          _avatar(name, 26, ring: speaking, color: AppColors.navy),
+          // 🎓 trainers show the Let's Speak logo (students know who the trainer is)
+          TrainerLogoAvatar(radius: 26, ring: speaking),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -2318,9 +2304,9 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
                   ),
                 ),
                 Text(
-                  speaking ? "Trainer • speaking" : "Trainer",
+                  t.weakNet ? "Trainer • weak internet" : (speaking ? "Trainer • speaking" : "Trainer"),
                   style: GoogleFonts.poppins(
-                    color: speaking ? AppColors.teal : roomSecondary,
+                    color: t.weakNet ? AppColors.error : (speaking ? AppColors.teal : roomSecondary),
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                   ),
@@ -2360,6 +2346,8 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
                 ringColor: practicing && !speaking ? const Color(0xffF5B83D) : AppColors.teal,
                 color: isMe ? AppColors.teal : null,
               ),
+              if (p.weakNet) // 📶 weak internet
+                const Positioned(left: -3, top: -3, child: WeakNetDot(size: 18)),
               Positioned(
                 right: -2,
                 bottom: -2,
@@ -2624,4 +2612,4 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
       ),
     );
   }
-}
+} 

@@ -1,16 +1,34 @@
 import Flutter
 import UIKit
 import UserNotifications
+import flutter_local_notifications
 
 @main
-@objc class AppDelegate: FlutterAppDelegate {
+@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    // 🔔 show notifications (class reminders, alerts) also while the app is open
-    UNUserNotificationCenter.current().delegate = self
-    GeneratedPluginRegistrant.register(with: self)
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+
+    // ⏰ Class reminders: lets scheduled notifications work in the background
+    FlutterLocalNotificationsPlugin.setPluginRegistrantCallback { registry in
+      GeneratedPluginRegistrant.register(with: registry)
+    }
+
+    // ⏰ Class reminders: show the reminder even while the app is open on screen
+    UNUserNotificationCenter.current().delegate = self as UNUserNotificationCenterDelegate
+
+    return super.application(
+      application,
+      didFinishLaunchingWithOptions: launchOptions
+    )
+  }
+
+  func didInitializeImplicitFlutterEngine(
+    _ engineBridge: FlutterImplicitEngineBridge
+  ) {
+    GeneratedPluginRegistrant.register(
+      with: engineBridge.pluginRegistry
+    )
   }
 }

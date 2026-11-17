@@ -4,7 +4,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:lets_talk/apis/api_headers.dart';
 import 'package:lets_talk/Controllers/authContoller.dart';
+import 'package:lets_talk/services/stage_access.dart';
 import 'package:lets_talk/apis/api_endpoint.dart';
 import 'package:lets_talk/Screens/app_colors.dart';
 
@@ -18,7 +20,10 @@ const double allowedRadius =
 class StageAttendanceWidget extends StatefulWidget {
   final String stageName;
 
-  const StageAttendanceWidget({super.key, required this.stageName});
+  // language: 'Hindi' on Hindi screens → the server knows which course it is
+  final String language;
+
+  const StageAttendanceWidget({super.key, required this.stageName, this.language = 'English'});
 
   @override
   State<StageAttendanceWidget> createState() => _StageAttendanceWidgetState();
@@ -107,6 +112,7 @@ class _StageAttendanceWidgetState extends State<StageAttendanceWidget> {
     try {
       final response = await http.get(
         Uri.parse("${ApiEndpoints.myAttendance}?userId=$userId"),
+        headers: ApiHeaders.auth(), // 🔐 login token
       );
 
       if (response.statusCode == 200) {
@@ -294,10 +300,11 @@ class _StageAttendanceWidgetState extends State<StageAttendanceWidget> {
       final userData = authController.userData;
       final response = await http.post(
         Uri.parse(ApiEndpoints.markAttendance),
-        headers: {"Content-Type": "application/json"},
+        headers: ApiHeaders.json(), // 🔐 login token (server needs it)
         body: jsonEncode({
           "userId": userData['id'] ?? userData['_id'],
           "stage": widget.stageName,
+          "language": widget.language,
           "batchTime": currentBatchSlot ?? "General Batch",
           "lat": position.latitude,
           "lng": position.longitude,
@@ -347,7 +354,9 @@ class _StageAttendanceWidgetState extends State<StageAttendanceWidget> {
           .toLowerCase();
 
       // If student is set to Online, do not show offline GPS check-in button
-      if (userMode != "offline") {
+      // 🎓 finished stage (promoted / dropout) → study material only, no attendance button
+      if (userMode != "offline" ||
+          !StageAccess.live(authController.userData, widget.language, StageAccess.key(widget.stageName))) {
         return const SizedBox.shrink();
       }
 

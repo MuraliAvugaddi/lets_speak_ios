@@ -1,11 +1,16 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_pdfview/flutter_pdfview.dart';
 import 'package:get/get.dart';
+import 'package:http/http.dart' as http;
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:lets_talk/Screens/English_meteral_5/English_stage1_screen.dart';
 import 'package:lets_talk/Screens/app_colors.dart';
-import 'package:lets_talk/Screens/widgets/StageAttendanceWidget.dart';
+import 'package:lets_talk/apis/api_endpoint.dart';
+import 'package:lets_talk/Controllers/authContoller.dart';
 import 'package:path_provider/path_provider.dart';
 
 class HindiStage6Screen extends StatefulWidget {
@@ -213,9 +218,11 @@ class _HindiStage6ScreenState extends State<HindiStage6Screen> {
       },
     ];
 
+    final systemBarColor = AppColors.navy;
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
+        statusBarColor: systemBarColor,
         statusBarIconBrightness: Brightness.light,
         statusBarBrightness: Brightness.dark,
         systemNavigationBarColor: background,
@@ -224,23 +231,30 @@ class _HindiStage6ScreenState extends State<HindiStage6Screen> {
             : Brightness.dark,
       ),
       child: Scaffold(
-        backgroundColor: AppColors.navy,
-        body: Column(
-          children: [
-            // Fixed modern app bar with SafeArea inside to fill iOS notch
-            Container(
-              width: double.infinity,
-              decoration: const BoxDecoration(
-                color: AppColors.navy,
-                borderRadius: BorderRadius.only(
-                  bottomLeft: Radius.circular(24),
-                  bottomRight: Radius.circular(24),
+        backgroundColor: background,
+        body: SafeArea(
+          top: false, // 🎨 blue header goes behind the status bar (Android 15)
+          bottom: false,
+          child: Column(
+            children: [
+              // Fixed app bar (clean, with back button and title only)
+              Container(
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  color: AppColors.navy,
+                  borderRadius: BorderRadius.only(
+                    bottomLeft: Radius.circular(24),
+                    bottomRight: Radius.circular(24),
+                  ),
                 ),
-              ),
-              child: SafeArea(
-                bottom: false,
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                  // status bar height + 8 → header text stays below the clock
+                  padding: EdgeInsets.fromLTRB(
+                    10,
+                    MediaQuery.paddingOf(context).top + 8,
+                    10,
+                    10,
+                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -353,140 +367,130 @@ class _HindiStage6ScreenState extends State<HindiStage6Screen> {
                   ),
                 ),
               ),
-            ),
 
-            // Content container fills remaining area with screen background
-            Expanded(
-              child: Container(
-                color: background,
-                child: Column(
-                  children: [
-                    // Pinned / Non-scrolling Attendance Widget
-                    const StageAttendanceWidget(stageName: 'Stage 6'),
+              // Pinned / Non-scrolling Attendance Widget
+              const StageAttendanceWidget(stageName: 'Stage 6', language: 'Hindi'),
 
-                    // Scrollable area for Course Hero and Lessons wrapped with RefreshIndicator
-                    Expanded(
-                      child: RefreshIndicator(
-                        onRefresh: _onRefresh,
-                        color: AppColors.teal,
-                        backgroundColor: surface,
-                        child: CustomScrollView(
-                          physics: const AlwaysScrollableScrollPhysics(
-                            parent: BouncingScrollPhysics(),
+              // Scrollable area for Course Hero and Lessons wrapped with RefreshIndicator
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: _onRefresh,
+                  color: AppColors.teal,
+                  backgroundColor: surface,
+                  child: CustomScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(
+                      parent: BouncingScrollPhysics(),
+                    ),
+                    slivers: [
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+                        sliver: SliverToBoxAdapter(
+                          child: _CourseHero(
+                            isDark: isDark,
+                            title: 'Your learning library',
+                            subtitle:
+                                'Open a lesson to dive into high-level speaking practice, present willingness, permanent/temporary abilities, and ultimate fluency.',
                           ),
-                          slivers: [
-                            SliverPadding(
-                              padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
-                              sliver: SliverToBoxAdapter(
-                                child: _CourseHero(
-                                  isDark: isDark,
-                                  title: 'Your learning library',
-                                  subtitle:
-                                      'Open a lesson to dive into high-level speaking practice, present willingness, permanent/temporary abilities, and ultimate fluency.',
-                                ),
-                              ),
-                            ),
-                            SliverPadding(
-                              padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
-                              sliver: SliverToBoxAdapter(
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        'Stage 6 Lessons',
-                                        style: GoogleFonts.poppins(
-                                          color: text,
-                                          fontSize: 17,
-                                          fontWeight: FontWeight.w800,
-                                        ),
-                                      ),
-                                    ),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 10,
-                                        vertical: 6,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.teal.withValues(
-                                          alpha: isDark ? 0.16 : 0.10,
-                                        ),
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                      child: Text(
-                                        '22 lessons',
-                                        style: GoogleFonts.poppins(
-                                          color: isDark
-                                              ? AppColors.teal
-                                              : AppColors.deepNavy,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            SliverPadding(
-                              padding: const EdgeInsets.fromLTRB(14, 0, 14, 28),
-                              sliver: SliverList.separated(
-                                itemCount: daysData.length,
-                                separatorBuilder: (_, __) =>
-                                    const SizedBox(height: 10),
-                                itemBuilder: (context, index) {
-                                  final dayItem = daysData[index];
-                                  final String day = dayItem['day'];
-                                  final String title = dayItem['title'];
-                                  final String subtitle = dayItem['subtitle'];
-                                  final String? pdfPath = dayItem['pdfPath'];
-                                  final bool isPractice =
-                                      dayItem['isPractice'] ?? false;
-                                  final bool isPdfAvailable = pdfPath != null;
-
-                                  return _LessonCard(
-                                    day: day,
-                                    title: title,
-                                    subtitle: subtitle,
-                                    isPractice: isPractice,
-                                    isPdfAvailable: isPdfAvailable,
-                                    isDark: isDark,
-                                    surface: surface,
-                                    surfaceSoft: surfaceSoft,
-                                    text: text,
-                                    secondary: secondary,
-                                    border: border,
-                                    onTap: () {
-                                      if (isPdfAvailable) {
-                                        Get.to(
-                                          () => PdfViewerScreen(
-                                            title: '$day: $title',
-                                            assetPath: pdfPath,
-                                          ),
-                                        );
-                                      } else {
-                                        _showDemoDialog(
-                                          context,
-                                          isDark,
-                                          text,
-                                          secondary,
-                                          surface,
-                                          border,
-                                        );
-                                      }
-                                    },
-                                  );
-                                },
-                              ),
-                            ),
-                          ],
                         ),
                       ),
-                    ),
-                  ],
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
+                        sliver: SliverToBoxAdapter(
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Stage 6 Lessons',
+                                  style: GoogleFonts.poppins(
+                                    color: text,
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.teal.withValues(
+                                    alpha: isDark ? 0.16 : 0.10,
+                                  ),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  '22 lessons',
+                                  style: GoogleFonts.poppins(
+                                    color: isDark
+                                        ? AppColors.teal
+                                        : AppColors.deepNavy,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(14, 0, 14, 28),
+                        sliver: SliverList.separated(
+                          itemCount: daysData.length,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 10),
+                          itemBuilder: (context, index) {
+                            final dayItem = daysData[index];
+                            final String day = dayItem['day'];
+                            final String title = dayItem['title'];
+                            final String subtitle = dayItem['subtitle'];
+                            final String? pdfPath = dayItem['pdfPath'];
+                            final bool isPractice =
+                                dayItem['isPractice'] ?? false;
+                            final bool isPdfAvailable = pdfPath != null;
+
+                            return _LessonCard(
+                              day: day,
+                              title: title,
+                              subtitle: subtitle,
+                              isPractice: isPractice,
+                              isPdfAvailable: isPdfAvailable,
+                              isDark: isDark,
+                              surface: surface,
+                              surfaceSoft: surfaceSoft,
+                              text: text,
+                              secondary: secondary,
+                              border: border,
+                              onTap: () {
+                                if (isPdfAvailable) {
+                                  Get.to(
+                                    () => PdfViewerScreen(
+                                      title: '$day: $title',
+                                      assetPath: pdfPath,
+                                    ),
+                                  );
+                                } else {
+                                  _showDemoDialog(
+                                    context,
+                                    isDark,
+                                    text,
+                                    secondary,
+                                    surface,
+                                    border,
+                                  );
+                                }
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -959,9 +963,11 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         ? AppColors.darkTextSecondary
         : AppColors.textSecondary;
 
+    final pdfSystemBarColor = AppColors.navy;
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
+        statusBarColor: pdfSystemBarColor,
         statusBarIconBrightness: Brightness.light,
         statusBarBrightness: Brightness.dark,
         systemNavigationBarColor: background,
@@ -970,71 +976,76 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
             : Brightness.dark,
       ),
       child: Scaffold(
-        backgroundColor: AppColors.navy,
-        body: Column(
-          children: [
-            Container(
-              decoration: const BoxDecoration(color: AppColors.navy),
-              child: SafeArea(
-                bottom: false,
-                child: Container(
-                  height: 58,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Row(
-                    children: [
-                      _HeaderButton(
-                        icon: Icons.arrow_back_ios_new_rounded,
-                        onTap: Get.back,
+        backgroundColor: background,
+        body: SafeArea(
+          top: false, // 🎨 blue header goes behind the status bar (Android 15)
+          bottom: false,
+          child: Column(
+            children: [
+              Container(
+                // status bar height + 58 → blue also behind the clock
+                height: 58 + MediaQuery.paddingOf(context).top,
+                padding: EdgeInsets.fromLTRB(
+                  8,
+                  MediaQuery.paddingOf(context).top,
+                  8,
+                  0,
+                ),
+                decoration: const BoxDecoration(color: AppColors.navy),
+                child: Row(
+                  children: [
+                    _HeaderButton(
+                      icon: Icons.arrow_back_ios_new_rounded,
+                      onTap: Get.back,
+                    ),
+                    const SizedBox(width: 10),
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: AppColors.teal,
+                        borderRadius: BorderRadius.circular(11),
                       ),
-                      const SizedBox(width: 10),
-                      Container(
-                        width: 38,
-                        height: 38,
-                        decoration: BoxDecoration(
-                          color: AppColors.teal,
-                          borderRadius: BorderRadius.circular(11),
-                        ),
-                        child: const Icon(
-                          Icons.picture_as_pdf_rounded,
-                          color: Colors.white,
-                          size: 20,
-                        ),
+                      child: const Icon(
+                        Icons.picture_as_pdf_rounded,
+                        color: Colors.white,
+                        size: 20,
                       ),
-                      const SizedBox(width: 9),
-                      Expanded(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              widget.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: GoogleFonts.poppins(
-                                color: Colors.white,
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w700,
-                              ),
+                    ),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            widget.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.poppins(
+                              color: Colors.white,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
                             ),
-                            Text(
-                              'Stage 6 (Hindi)  •  Lesson material',
-                              style: GoogleFonts.poppins(
-                                color: Colors.white.withValues(alpha: 0.68),
-                                fontSize: 8.5,
-                              ),
+                          ),
+                          Text(
+                            'Stage 6  •  Lesson material',
+                            style: GoogleFonts.poppins(
+                              color: Colors.white.withValues(alpha: 0.68),
+                              fontSize: 8.5,
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
-                      // Reload button removed
-                    ],
-                  ),
+                    ),
+                    _HeaderButton(
+                      icon: Icons.refresh_rounded,
+                      onTap: _loadPdfFromAsset,
+                    ),
+                  ],
                 ),
               ),
-            ),
-            Expanded(
-              child: Container(
-                color: background,
+              Expanded(
                 child: isLoading
                     ? const Center(
                         child: CircularProgressIndicator(color: AppColors.teal),
@@ -1153,8 +1164,8 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                         ),
                       ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

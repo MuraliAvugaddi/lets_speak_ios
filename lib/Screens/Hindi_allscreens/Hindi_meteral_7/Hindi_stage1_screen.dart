@@ -1,11 +1,18 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_pdfview/flutter_pdfview.dart';
 import 'package:get/get.dart';
+import 'package:http/http.dart' as http;
+import 'package:lets_talk/apis/api_headers.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:lets_talk/Screens/English_meteral_5/English_stage1_screen.dart';
 import 'package:lets_talk/Screens/app_colors.dart';
-import 'package:lets_talk/Screens/widgets/StageAttendanceWidget.dart';
+import 'package:lets_talk/apis/api_endpoint.dart';
+import 'package:lets_talk/Controllers/authContoller.dart';
+import 'package:lets_talk/services/stage_access.dart';
 import 'package:path_provider/path_provider.dart';
 
 class HindiStage1Screen extends StatefulWidget {
@@ -197,9 +204,11 @@ class _HindiStage1ScreenState extends State<HindiStage1Screen> {
       },
     ];
 
+    final systemBarColor = AppColors.navy;
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
+        statusBarColor: systemBarColor,
         statusBarIconBrightness: Brightness.light,
         statusBarBrightness: Brightness.dark,
         systemNavigationBarColor: background,
@@ -208,23 +217,30 @@ class _HindiStage1ScreenState extends State<HindiStage1Screen> {
             : Brightness.dark,
       ),
       child: Scaffold(
-        backgroundColor: AppColors.navy,
-        body: Column(
-          children: [
-            // Fixed modern app bar with SafeArea inside to fill iOS notch
-            Container(
-              width: double.infinity,
-              decoration: const BoxDecoration(
-                color: AppColors.navy,
-                borderRadius: BorderRadius.only(
-                  bottomLeft: Radius.circular(24),
-                  bottomRight: Radius.circular(24),
+        backgroundColor: background,
+        body: SafeArea(
+          top: false, // 🎨 blue header goes behind the status bar (Android 15)
+          bottom: false,
+          child: Column(
+            children: [
+              // Fixed app bar (clean, with back button and title only)
+              Container(
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  color: AppColors.navy,
+                  borderRadius: BorderRadius.only(
+                    bottomLeft: Radius.circular(24),
+                    bottomRight: Radius.circular(24),
+                  ),
                 ),
-              ),
-              child: SafeArea(
-                bottom: false,
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                  // status bar height + 8 → header text stays below the clock
+                  padding: EdgeInsets.fromLTRB(
+                    10,
+                    MediaQuery.paddingOf(context).top + 8,
+                    10,
+                    10,
+                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -337,140 +353,130 @@ class _HindiStage1ScreenState extends State<HindiStage1Screen> {
                   ),
                 ),
               ),
-            ),
 
-            // Content container fills remaining area with screen background
-            Expanded(
-              child: Container(
-                color: background,
-                child: Column(
-                  children: [
-                    // Pinned / Non-scrolling Attendance Widget
-                    const StageAttendanceWidget(stageName: 'Stage 1'),
+              // Pinned / Non-scrolling Attendance Widget
+              const StageAttendanceWidget(stageName: 'Stage 1', language: 'Hindi'),
 
-                    // Scrollable area for Course Hero and Lessons wrapped with RefreshIndicator
-                    Expanded(
-                      child: RefreshIndicator(
-                        onRefresh: _onRefresh,
-                        color: AppColors.teal,
-                        backgroundColor: surface,
-                        child: CustomScrollView(
-                          physics: const AlwaysScrollableScrollPhysics(
-                            parent: BouncingScrollPhysics(),
+              // Scrollable area for Course Hero and Lessons wrapped with RefreshIndicator
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: _onRefresh,
+                  color: AppColors.teal,
+                  backgroundColor: surface,
+                  child: CustomScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(
+                      parent: BouncingScrollPhysics(),
+                    ),
+                    slivers: [
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+                        sliver: SliverToBoxAdapter(
+                          child: _CourseHero(
+                            isDark: isDark,
+                            title: 'Your learning library',
+                            subtitle:
+                                'Open a lesson to study foundation rules and build your Hindi-English base step by step.',
                           ),
-                          slivers: [
-                            SliverPadding(
-                              padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
-                              sliver: SliverToBoxAdapter(
-                                child: _CourseHero(
-                                  isDark: isDark,
-                                  title: 'Your learning library',
-                                  subtitle:
-                                      'Open a lesson to study foundation rules and build your Hindi-English base step by step.',
-                                ),
-                              ),
-                            ),
-                            SliverPadding(
-                              padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
-                              sliver: SliverToBoxAdapter(
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        'Stage 1 Lessons',
-                                        style: GoogleFonts.poppins(
-                                          color: text,
-                                          fontSize: 17,
-                                          fontWeight: FontWeight.w800,
-                                        ),
-                                      ),
-                                    ),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 10,
-                                        vertical: 6,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.teal.withValues(
-                                          alpha: isDark ? 0.16 : 0.10,
-                                        ),
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                      child: Text(
-                                        '20 lessons',
-                                        style: GoogleFonts.poppins(
-                                          color: isDark
-                                              ? AppColors.teal
-                                              : AppColors.deepNavy,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            SliverPadding(
-                              padding: const EdgeInsets.fromLTRB(14, 0, 14, 28),
-                              sliver: SliverList.separated(
-                                itemCount: daysData.length,
-                                separatorBuilder: (_, __) =>
-                                    const SizedBox(height: 10),
-                                itemBuilder: (context, index) {
-                                  final dayItem = daysData[index];
-                                  final String day = dayItem['day'];
-                                  final String title = dayItem['title'];
-                                  final String subtitle = dayItem['subtitle'];
-                                  final String? pdfPath = dayItem['pdfPath'];
-                                  final bool isPractice =
-                                      dayItem['isPractice'] ?? false;
-                                  final bool isPdfAvailable = pdfPath != null;
-
-                                  return _LessonCard(
-                                    day: day,
-                                    title: title,
-                                    subtitle: subtitle,
-                                    isPractice: isPractice,
-                                    isPdfAvailable: isPdfAvailable,
-                                    isDark: isDark,
-                                    surface: surface,
-                                    surfaceSoft: surfaceSoft,
-                                    text: text,
-                                    secondary: secondary,
-                                    border: border,
-                                    onTap: () {
-                                      if (isPdfAvailable) {
-                                        Get.to(
-                                          () => PdfViewerScreen(
-                                            title: '$day: $title',
-                                            assetPath: pdfPath,
-                                          ),
-                                        );
-                                      } else {
-                                        _showDemoDialog(
-                                          context,
-                                          isDark,
-                                          text,
-                                          secondary,
-                                          surface,
-                                          border,
-                                        );
-                                      }
-                                    },
-                                  );
-                                },
-                              ),
-                            ),
-                          ],
                         ),
                       ),
-                    ),
-                  ],
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
+                        sliver: SliverToBoxAdapter(
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Stage 1 Lessons',
+                                  style: GoogleFonts.poppins(
+                                    color: text,
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.teal.withValues(
+                                    alpha: isDark ? 0.16 : 0.10,
+                                  ),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  '20 lessons',
+                                  style: GoogleFonts.poppins(
+                                    color: isDark
+                                        ? AppColors.teal
+                                        : AppColors.deepNavy,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(14, 0, 14, 28),
+                        sliver: SliverList.separated(
+                          itemCount: daysData.length,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 10),
+                          itemBuilder: (context, index) {
+                            final dayItem = daysData[index];
+                            final String day = dayItem['day'];
+                            final String title = dayItem['title'];
+                            final String subtitle = dayItem['subtitle'];
+                            final String? pdfPath = dayItem['pdfPath'];
+                            final bool isPractice =
+                                dayItem['isPractice'] ?? false;
+                            final bool isPdfAvailable = pdfPath != null;
+
+                            return _LessonCard(
+                              day: day,
+                              title: title,
+                              subtitle: subtitle,
+                              isPractice: isPractice,
+                              isPdfAvailable: isPdfAvailable,
+                              isDark: isDark,
+                              surface: surface,
+                              surfaceSoft: surfaceSoft,
+                              text: text,
+                              secondary: secondary,
+                              border: border,
+                              onTap: () {
+                                if (isPdfAvailable) {
+                                  Get.to(
+                                    () => PdfViewerScreen(
+                                      title: '$day: $title',
+                                      assetPath: pdfPath,
+                                    ),
+                                  );
+                                } else {
+                                  _showDemoDialog(
+                                    context,
+                                    isDark,
+                                    text,
+                                    secondary,
+                                    surface,
+                                    border,
+                                  );
+                                }
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -556,6 +562,477 @@ class _HindiStage1ScreenState extends State<HindiStage1Screen> {
       ),
       barrierColor: Colors.black.withValues(alpha: isDark ? 0.70 : 0.35),
     );
+  }
+}
+
+// --- STAGE ATTENDANCE WIDGET ---
+const double instituteLat = 17.729417;
+const double instituteLng = 83.32231;
+const double allowedRadius = 40.0;
+
+class StageAttendanceWidget extends StatefulWidget {
+  final String stageName;
+
+  // language: 'Hindi' on Hindi screens → the server knows which course it is
+  final String language;
+
+  const StageAttendanceWidget({super.key, required this.stageName, this.language = 'English'});
+
+  @override
+  State<StageAttendanceWidget> createState() => _StageAttendanceWidgetState();
+}
+
+class _StageAttendanceWidgetState extends State<StageAttendanceWidget> {
+  final authController = Get.find<AuthController>();
+
+  bool isAttendanceLoading = false;
+  bool isMarkedToday = false;
+  String? currentBatchSlot;
+  String attendanceStatusText = "Not Marked";
+
+  Color _deepOceanBlue(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark ? AppColors.teal : AppColors.navy;
+  }
+
+  Color _tealMist(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark ? AppColors.teal : AppColors.teal;
+  }
+
+  Color _goldenYellow(BuildContext context) => AppColors.yellow;
+
+  Color _cardColor(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark ? AppColors.darkSurface : AppColors.surface;
+  }
+
+  Color _primaryText(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark ? AppColors.darkText : AppColors.text;
+  }
+
+  Color _secondaryText(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
+  }
+
+  Color _borderColor(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark ? AppColors.darkBorder : AppColors.border;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _calculateCurrentBatch();
+    _checkIfAlreadyMarkedToday();
+  }
+
+  void _calculateCurrentBatch() {
+    final now = DateTime.now();
+    final int currentMinutes = now.hour * 60 + now.minute;
+
+    String? slot;
+    if (currentMinutes >= 330 && currentMinutes < 420) {
+      slot = "5:30 AM - 7:00 AM";
+    } else if (currentMinutes >= 420 && currentMinutes < 510) {
+      slot = "7:00 AM - 8:30 AM";
+    } else if (currentMinutes >= 540 && currentMinutes < 630) {
+      slot = "9:00 AM - 10:30 AM";
+    } else if (currentMinutes >= 630 && currentMinutes < 720) {
+      slot = "10:30 AM - 12:00 PM";
+    } else if (currentMinutes >= 930 && currentMinutes < 1020) {
+      slot = "3:30 PM - 5:00 PM";
+    } else if (currentMinutes >= 1020 && currentMinutes < 1110) {
+      slot = "5:00 PM - 6:30 PM";
+    } else if (currentMinutes >= 1110 && currentMinutes < 1400) {
+      slot = "6:30 PM - 8:00 PM";
+    }
+
+    if (mounted) setState(() => currentBatchSlot = slot);
+  }
+
+  Future<void> _checkIfAlreadyMarkedToday() async {
+    final userData = authController.userData;
+    final userId = userData['id'] ?? userData['_id'];
+    if (userId == null) return;
+
+    final now = DateTime.now();
+    final todayStr = "${now.day}-${now.month}-${now.year}";
+
+    try {
+      final response = await http.get(
+        Uri.parse("${ApiEndpoints.myAttendance}?userId=$userId"),
+        headers: ApiHeaders.auth(), // 🔐 login token
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final List records = data['records'] ?? [];
+
+        final todayRecord = records.firstWhere(
+          (r) =>
+              r['date'] == todayStr &&
+              r['stage']?.toString().toLowerCase() ==
+                  widget.stageName.toLowerCase(),
+          orElse: () => null,
+        );
+
+        if (todayRecord != null && mounted) {
+          setState(() {
+            isMarkedToday = true;
+            attendanceStatusText = todayRecord['status'] ?? "Present";
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> markAttendance() async {
+    setState(() => isAttendanceLoading = true);
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        Get.defaultDialog(
+          title: "Enable GPS",
+          titlePadding: const EdgeInsets.only(top: 20, bottom: 8),
+          titleStyle: GoogleFonts.poppins(
+            fontSize: 17,
+            fontWeight: FontWeight.bold,
+            color: _primaryText(context),
+          ),
+          middleText:
+              "Your device GPS is turned off. Please turn it on to check in.",
+          middleTextStyle: GoogleFonts.poppins(
+            color: _secondaryText(context),
+            fontSize: 13,
+          ),
+          backgroundColor: _cardColor(context),
+          radius: 16,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 10,
+          ),
+          confirm: SizedBox(
+            height: 40,
+            child: ElevatedButton(
+              onPressed: () async {
+                Get.back();
+                await Geolocator.openLocationSettings();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _deepOceanBlue(context),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: Text(
+                "Open Settings",
+                style: GoogleFonts.poppins(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+          cancel: SizedBox(
+            height: 40,
+            child: TextButton(
+              onPressed: () => Get.back(),
+              child: Text(
+                "Cancel",
+                style: GoogleFonts.poppins(color: _secondaryText(context)),
+              ),
+            ),
+          ),
+        );
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          Get.snackbar(
+            "Permission Denied",
+            "Location permission is required to check in.",
+            backgroundColor: AppColors.error,
+            colorText: Colors.white,
+          );
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        Get.defaultDialog(
+          title: "Permission Required",
+          titlePadding: const EdgeInsets.only(top: 20, bottom: 8),
+          titleStyle: GoogleFonts.poppins(
+            fontSize: 17,
+            fontWeight: FontWeight.bold,
+            color: _primaryText(context),
+          ),
+          middleText:
+              "Location permission is permanently blocked. Please allow location in App Settings.",
+          middleTextStyle: GoogleFonts.poppins(
+            color: _secondaryText(context),
+            fontSize: 13,
+          ),
+          backgroundColor: _cardColor(context),
+          radius: 16,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 10,
+          ),
+          confirm: SizedBox(
+            height: 40,
+            child: ElevatedButton(
+              onPressed: () async {
+                Get.back();
+                await Geolocator.openAppSettings();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _deepOceanBlue(context),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: Text(
+                "Open Settings",
+                style: GoogleFonts.poppins(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+          cancel: SizedBox(
+            height: 40,
+            child: TextButton(
+              onPressed: () => Get.back(),
+              child: Text(
+                "Cancel",
+                style: GoogleFonts.poppins(color: _secondaryText(context)),
+              ),
+            ),
+          ),
+        );
+        return;
+      }
+
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      double distance = Geolocator.distanceBetween(
+        position.latitude,
+        position.longitude,
+        instituteLat,
+        instituteLng,
+      );
+
+      if (distance > allowedRadius) {
+        Get.snackbar(
+          "Out of Range",
+          "You are ${distance.toInt()}m away. You must be inside the institute (${allowedRadius.toInt()}m) to check in.",
+          backgroundColor: Colors.redAccent,
+          colorText: Colors.white,
+          duration: const Duration(seconds: 4),
+        );
+        return;
+      }
+
+      final userData = authController.userData;
+      final response = await http.post(
+        Uri.parse(ApiEndpoints.markAttendance),
+        headers: ApiHeaders.json(), // 🔐 login token (server needs it)
+        body: jsonEncode({
+          "userId": userData['id'] ?? userData['_id'],
+          "stage": widget.stageName,
+          "language": widget.language,
+          "batchTime": currentBatchSlot ?? "General Batch",
+          "lat": position.latitude,
+          "lng": position.longitude,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        setState(() {
+          isMarkedToday = true;
+          attendanceStatusText = body['record']?['status'] ?? "Present";
+        });
+        Get.snackbar(
+          "Checked In!",
+          "Marked $attendanceStatusText for ${widget.stageName}",
+          backgroundColor: _tealMist(context),
+          colorText: Colors.white,
+        );
+      } else {
+        final body = jsonDecode(response.body);
+        Get.snackbar(
+          "Notice",
+          body['message'] ?? "Attendance already marked.",
+          backgroundColor: AppColors.yellow,
+          colorText: _primaryText(context),
+        );
+      }
+    } catch (e) {
+      Get.snackbar(
+        "Error",
+        "Check-in failed: $e",
+        backgroundColor: AppColors.error,
+        colorText: Colors.white,
+      );
+    } finally {
+      if (mounted) setState(() => isAttendanceLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      final String userMode = (authController.userData['mode'] ?? "online")
+          .toString()
+          .toLowerCase();
+
+      // 🎓 finished stage (promoted / dropout) → study material only, no attendance button
+      if (userMode != "offline" ||
+          !StageAccess.live(authController.userData, widget.language, StageAccess.key(widget.stageName))) {
+        return const SizedBox.shrink();
+      }
+
+      if (isMarkedToday) {
+        return Container(
+          width: double.infinity,
+          margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: _tealMist(context).withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: _tealMist(context).withValues(alpha: 0.35),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.check_circle_rounded,
+                color: _goldenYellow(context),
+                size: 28,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      attendanceStatusText,
+                      style: GoogleFonts.poppins(
+                        color: _goldenYellow(context),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    Text(
+                      "${widget.stageName} • ${currentBatchSlot ?? 'Active Session'}",
+                      style: GoogleFonts.poppins(
+                        color: _secondaryText(context),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+
+      if (currentBatchSlot != null) {
+        return Container(
+          width: double.infinity,
+          margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: _cardColor(context),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: _borderColor(context)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "Mark Classroom Attendance",
+                style: GoogleFonts.poppins(
+                  color: _primaryText(context),
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                "Current Batch: $currentBatchSlot",
+                style: GoogleFonts.poppins(
+                  color: _secondaryText(context),
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: ElevatedButton.icon(
+                  onPressed: isAttendanceLoading ? null : markAttendance,
+                  icon: Icon(
+                    Icons.location_on_rounded,
+                    size: 18,
+                    color: _goldenYellow(context),
+                  ),
+                  label: Text(
+                    isAttendanceLoading
+                        ? "Verifying GPS Location..."
+                        : "I Am Here (Check-In)",
+                    style: GoogleFonts.poppins(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      color: Colors.white,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _deepOceanBlue(context),
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+
+      return Container(
+        width: double.infinity,
+        margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: _cardColor(context),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _borderColor(context)),
+        ),
+        child: Text(
+          "Class check-in will open when your scheduled batch starts.",
+          style: GoogleFonts.poppins(
+            color: _secondaryText(context),
+            fontSize: 12,
+          ),
+          textAlign: TextAlign.center,
+        ),
+      );
+    });
   }
 }
 
@@ -886,259 +1363,6 @@ class _LessonCard extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class PdfViewerScreen extends StatefulWidget {
-  final String title;
-  final String assetPath;
-
-  const PdfViewerScreen({
-    super.key,
-    required this.title,
-    required this.assetPath,
-  });
-
-  @override
-  State<PdfViewerScreen> createState() => _PdfViewerScreenState();
-}
-
-class _PdfViewerScreenState extends State<PdfViewerScreen> {
-  String? localPath;
-  bool isLoading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadPdfFromAsset();
-  }
-
-  Future<void> _loadPdfFromAsset() async {
-    try {
-      final bytes = await rootBundle.load(widget.assetPath);
-      final dir = await getTemporaryDirectory();
-      final filename = widget.assetPath.split('/').last;
-      final file = File('${dir.path}/$filename');
-      await file.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
-      if (mounted) {
-        setState(() {
-          localPath = file.path;
-          isLoading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => isLoading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final background = isDark ? AppColors.darkBackground : AppColors.background;
-    final text = isDark ? AppColors.darkText : AppColors.text;
-    final secondary = isDark
-        ? AppColors.darkTextSecondary
-        : AppColors.textSecondary;
-
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.light,
-        statusBarBrightness: Brightness.dark,
-        systemNavigationBarColor: background,
-        systemNavigationBarIconBrightness: isDark
-            ? Brightness.light
-            : Brightness.dark,
-      ),
-      child: Scaffold(
-        backgroundColor: AppColors.navy,
-        body: Column(
-          children: [
-            Container(
-              decoration: const BoxDecoration(color: AppColors.navy),
-              child: SafeArea(
-                bottom: false,
-                child: Container(
-                  height: 58,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Row(
-                    children: [
-                      _HeaderButton(
-                        icon: Icons.arrow_back_ios_new_rounded,
-                        onTap: Get.back,
-                      ),
-                      const SizedBox(width: 10),
-                      Container(
-                        width: 38,
-                        height: 38,
-                        decoration: BoxDecoration(
-                          color: AppColors.teal,
-                          borderRadius: BorderRadius.circular(11),
-                        ),
-                        child: const Icon(
-                          Icons.picture_as_pdf_rounded,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                      ),
-                      const SizedBox(width: 9),
-                      Expanded(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              widget.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: GoogleFonts.poppins(
-                                color: Colors.white,
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            Text(
-                              'Stage 1 (Hindi)  •  Lesson material',
-                              style: GoogleFonts.poppins(
-                                color: Colors.white.withValues(alpha: 0.68),
-                                fontSize: 8.5,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      // Reload button removed
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            Expanded(
-              child: Container(
-                color: background,
-                child: isLoading
-                    ? const Center(
-                        child: CircularProgressIndicator(color: AppColors.teal),
-                      )
-                    : localPath != null
-                    ? Stack(
-                        children: [
-                          Positioned.fill(
-                            child: Container(
-                              color: isDark
-                                  ? AppColors.darkBackground
-                                  : const Color(0xFFF5F8FA),
-                              padding: EdgeInsets.zero,
-                              child: PDFView(
-                                filePath: localPath,
-                                enableSwipe: true,
-                                swipeHorizontal: false,
-                                autoSpacing: false,
-                                pageFling: true,
-                                pageSnap: true,
-                                fitPolicy: FitPolicy.WIDTH,
-                                backgroundColor: isDark
-                                    ? AppColors.darkBackground
-                                    : const Color(0xFFF5F8FA),
-                              ),
-                            ),
-                          ),
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            bottom: 14,
-                            child: Center(
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 15,
-                                  vertical: 9,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: isDark
-                                      ? AppColors.darkSurface2
-                                      : AppColors.deepNavy,
-                                  borderRadius: BorderRadius.circular(22),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withValues(
-                                        alpha: 0.18,
-                                      ),
-                                      blurRadius: 12,
-                                      offset: const Offset(0, 5),
-                                    ),
-                                  ],
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(
-                                      Icons.menu_book_rounded,
-                                      color: AppColors.yellow,
-                                      size: 14,
-                                    ),
-                                    const SizedBox(width: 7),
-                                    Text(
-                                      'Swipe to read lesson',
-                                      style: GoogleFonts.poppins(
-                                        color: Colors.white,
-                                        fontSize: 9.5,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      )
-                    : Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Container(
-                                width: 62,
-                                height: 62,
-                                decoration: BoxDecoration(
-                                  color: AppColors.error10,
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  Icons.error_outline_rounded,
-                                  color: AppColors.error,
-                                  size: 30,
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                              Text(
-                                'Unable to load document',
-                                textAlign: TextAlign.center,
-                                style: GoogleFonts.poppins(
-                                  color: text,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'Please try opening the lesson again.',
-                                textAlign: TextAlign.center,
-                                style: GoogleFonts.poppins(
-                                  color: secondary,
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-              ),
-            ),
-          ],
         ),
       ),
     );

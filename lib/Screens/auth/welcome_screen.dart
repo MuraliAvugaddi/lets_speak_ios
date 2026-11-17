@@ -98,7 +98,7 @@ class WelcomeScreen extends StatelessWidget {
                       height: logoSize,
                       padding: const EdgeInsets.all(5),
                       decoration: BoxDecoration(
-                        color: surface,
+                        color: Colors.white, // logo has a white background → always white box
                         borderRadius: BorderRadius.circular(28),
                         border: Border.all(color: border),
                         boxShadow: [
@@ -112,7 +112,7 @@ class WelcomeScreen extends StatelessWidget {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(23),
                         child: Image.asset(
-                          "assets/images/let's speak.png",
+                          "assets/images/let'sspeak new logo with sir photo.png", // also listed in pubspec.yaml
                           fit: BoxFit.contain,
                           errorBuilder: (context, error, stackTrace) {
                             return Container(
@@ -133,42 +133,40 @@ class WelcomeScreen extends StatelessWidget {
 
                     SizedBox(height: compact ? 22 : 28),
 
-                    Text(
-                      'Speak With Surendra.',
-                      textAlign: TextAlign.center,
-                      style: GoogleFonts.poppins(
-                        color: text,
-                        fontSize: compact ? 27 : 30,
-                        fontWeight: FontWeight.w700,
-                        height: 1.12,
-                        letterSpacing: -0.7,
-                      ),
-                    ),
-
-                    const SizedBox(height: 8),
-
-                    // ✨ tagline
+                    // 🎓 Title
                     RichText(
                       textAlign: TextAlign.center,
                       text: TextSpan(
+                        style: GoogleFonts.poppins(
+                          fontSize: compact ? 27 : 30,
+                          fontWeight: FontWeight.w700,
+                          height: 1.15,
+                          letterSpacing: -0.6,
+                        ),
                         children: [
                           TextSpan(
-                            text: 'Shaping Futures Through ',
-                            style: GoogleFonts.poppins(
-                              color: secondary,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                            ),
+                            text: 'Speak With ',
+                            style: TextStyle(color: text),
                           ),
-                          TextSpan(
-                            text: 'Language Skills',
-                            style: GoogleFonts.poppins(
-                              color: teal,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                            ),
+                          const TextSpan(
+                            text: 'Surendra',
+                            style: TextStyle(color: teal),
                           ),
                         ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    // ✨ Tagline
+                    Text(
+                      'Shaping Futures Through Language Skills',
+                      textAlign: TextAlign.center,
+                      style: GoogleFonts.poppins(
+                        color: secondary,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w500,
+                        height: 1.4,
                       ),
                     ),
 

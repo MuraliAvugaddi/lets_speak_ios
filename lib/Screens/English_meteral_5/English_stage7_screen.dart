@@ -30,9 +30,11 @@ class _EnglishStage7ScreenState extends State<EnglishStage7Screen> {
         ? AppColors.darkTextSecondary
         : AppColors.textSecondary;
 
+    final systemBarColor = AppColors.navy;
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
+        statusBarColor: systemBarColor,
         statusBarIconBrightness: Brightness.light,
         statusBarBrightness: Brightness.dark,
         systemNavigationBarColor: background,
@@ -41,23 +43,30 @@ class _EnglishStage7ScreenState extends State<EnglishStage7Screen> {
             : Brightness.dark,
       ),
       child: Scaffold(
-        backgroundColor: AppColors.navy,
-        body: Column(
-          children: [
-            // Fixed modern rounded app bar with internal SafeArea for iOS notch fill
-            Container(
-              width: double.infinity,
-              decoration: const BoxDecoration(
-                color: AppColors.navy,
-                borderRadius: BorderRadius.only(
-                  bottomLeft: Radius.circular(24),
-                  bottomRight: Radius.circular(24),
+        backgroundColor: background,
+        body: SafeArea(
+          top: false, // 🎨 blue header goes behind the status bar (Android 15)
+          bottom: false,
+          child: Column(
+            children: [
+              // Fixed modern rounded app bar matching previous stages
+              Container(
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  color: AppColors.navy,
+                  borderRadius: BorderRadius.only(
+                    bottomLeft: Radius.circular(24),
+                    bottomRight: Radius.circular(24),
+                  ),
                 ),
-              ),
-              child: SafeArea(
-                bottom: false,
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                  // status bar height + 8 → header text stays below the clock
+                  padding: EdgeInsets.fromLTRB(
+                    10,
+                    MediaQuery.paddingOf(context).top + 8,
+                    10,
+                    10,
+                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -170,96 +179,86 @@ class _EnglishStage7ScreenState extends State<EnglishStage7Screen> {
                   ),
                 ),
               ),
-            ),
 
-            // Content container fills remaining area with screen background
-            Expanded(
-              child: Container(
-                color: background,
-                child: Column(
-                  children: [
-                    // Pinned / Non-scrolling Attendance Widget
-                    const StageAttendanceWidget(stageName: 'Stage 7'),
+              // Pinned / Non-scrolling Attendance Widget
+              const StageAttendanceWidget(stageName: 'Stage 7'),
 
-                    // Scrollable area for Course Hero and Empty State with pull-to-refresh
-                    Expanded(
-                      child: RefreshIndicator(
-                        onRefresh: _onRefresh,
-                        color: AppColors.teal,
-                        backgroundColor: surface,
-                        child: CustomScrollView(
-                          physics: const AlwaysScrollableScrollPhysics(
-                            parent: BouncingScrollPhysics(),
+              // Scrollable area for Course Hero and Empty State with pull-to-refresh
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: _onRefresh,
+                  color: AppColors.teal,
+                  backgroundColor: surface,
+                  child: CustomScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(
+                      parent: BouncingScrollPhysics(),
+                    ),
+                    slivers: [
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+                        sliver: SliverToBoxAdapter(
+                          child: _CourseHero(
+                            isDark: isDark,
+                            title: 'Your learning library',
+                            subtitle:
+                                'Stage 7 materials are currently being prepared and will be available soon.',
                           ),
-                          slivers: [
-                            SliverPadding(
-                              padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
-                              sliver: SliverToBoxAdapter(
-                                child: _CourseHero(
-                                  isDark: isDark,
-                                  title: 'Your learning library',
-                                  subtitle:
-                                      'Stage 7 materials are currently being prepared and will be available soon.',
-                                ),
-                              ),
-                            ),
-                            SliverFillRemaining(
-                              hasScrollBody: false,
-                              child: Padding(
-                                padding: const EdgeInsets.all(32.0),
-                                child: Center(
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Container(
-                                        width: 68,
-                                        height: 68,
-                                        decoration: BoxDecoration(
-                                          color: AppColors.teal.withValues(
-                                            alpha: 0.12,
-                                          ),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(
-                                          Icons.upcoming_rounded,
-                                          color: AppColors.teal,
-                                          size: 32,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      Text(
-                                        "Materials Coming Soon",
-                                        style: GoogleFonts.poppins(
-                                          color: text,
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w800,
-                                        ),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        "Check back later for Stage 7 learning modules and curriculum updates.",
-                                        style: GoogleFonts.poppins(
-                                          color: secondary,
-                                          fontSize: 12,
-                                          height: 1.4,
-                                        ),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
                         ),
                       ),
-                    ),
-                  ],
+                      SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: Padding(
+                          padding: const EdgeInsets.all(32.0),
+                          child: Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  width: 68,
+                                  height: 68,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.teal.withValues(
+                                      alpha: 0.12,
+                                    ),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(
+                                    Icons.upcoming_rounded,
+                                    color: AppColors.teal,
+                                    size: 32,
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  "Materials Coming Soon",
+                                  style: GoogleFonts.poppins(
+                                    color: text,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  "Check back later for Stage 7 learning modules and curriculum updates.",
+                                  style: GoogleFonts.poppins(
+                                    color: secondary,
+                                    fontSize: 12,
+                                    height: 1.4,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

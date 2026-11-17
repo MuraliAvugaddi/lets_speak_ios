@@ -15,15 +15,39 @@
 //   • kick / mute / end → our server (only trainers and admins may)
 // Made for big classes: audio only, silence is not sent (DTX), screen updates
 // are batched so 2,000 people in one room don't freeze the phone.
+//
+// 🛟 Class keeps running when the person opens another app, gets a phone call
+//    or a WhatsApp message:
+//    • Android: a small "Live class is on" notification (foreground service)
+//      keeps the mic + sound alive in the background
+//    • connection lost (bad network / phone call / app paused) → the app joins
+//      the class again by itself (no more "0 students" on the trainer side)
+// 🔊 Sound: Speaker / Phone (ear) / Bluetooth / Headphones + louder voice
+// 🎙 Mic: echo cancel + noise cancel + auto volume + low-hum filter
+// 📶 Weak internet is shown for every person (quality from LiveKit)
+// 🔆 Screen stays on during the class; power button → screen off, class
+//    sound + mic keep running (Android: CPU + Wi-Fi kept awake)
+// 📞 Phone / WhatsApp call during class → class sound + my mic pause, and
+//    come back by themselves when the call ends (sound route fixed too)
 // =========================================================================
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleListener;
+import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:get_storage/get_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:lets_talk/apis/api_endpoint.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
+import 'package:wakelock_plus/wakelock_plus.dart';
+
+/// Text of the Android "class is running" notification
+const String _bgTitle = "Let's Speak • Live class";
+const String _bgText = 'Your class is running. Tap to go back.';
 
 // -------------------------------------------------------------------------
 // Server calls (login token from storage, same as the rest of the app)
@@ -36,9 +60,25 @@ Map<String, String> _headers() {
   };
 }
 
-Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async {
+/// Server said no (status code kept, so a rejoin knows when to stop trying)
+class _ServerError implements Exception {
+  final int code;
+  final String message;
+  const _ServerError(this.code, this.message);
+  @override
+  String toString() => 'Exception: $message';
+}
+
+Future<Map<String, dynamic>> _post(
+  String path,
+  Map<String, dynamic> body,
+) async {
   final res = await http
-      .post(Uri.parse('${ApiEndpoints.baseUrl}$path'), headers: _headers(), body: jsonEncode(body))
+      .post(
+        Uri.parse('${ApiEndpoints.baseUrl}$path'),
+        headers: _headers(),
+        body: jsonEncode(body),
+      )
       .timeout(const Duration(seconds: 20));
   Map<String, dynamic> data = {};
   try {
@@ -46,9 +86,312 @@ Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async
     if (d is Map) data = Map<String, dynamic>.from(d);
   } catch (_) {}
   if (res.statusCode < 200 || res.statusCode >= 300) {
-    throw Exception((data['error'] ?? data['message'] ?? 'Server error ${res.statusCode}').toString());
+    throw _ServerError(
+      res.statusCode,
+      (data['error'] ?? data['message'] ?? 'Server error ${res.statusCode}')
+          .toString(),
+    );
   }
   return data;
+}
+
+bool get _isAndroid =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+bool get _isIOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+bool get _isMobile => _isAndroid || _isIOS;
+
+// -------------------------------------------------------------------------
+// 🛟 Android: keep the class alive in the background (native service in
+// MainActivity.kt / ClassAudioService.kt). Also lists the sound devices.
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+// 📺 SMALL WINDOW (Android picture-in-picture)
+// In class → student / trainer opens WhatsApp (home button, recent apps) →
+// the class shrinks to a small window ON TOP of WhatsApp. Tap it → back to class.
+// The class keeps running the whole time (sound + mic as before).
+// -------------------------------------------------------------------------
+class ClassPip {
+  /// true while the app is showing as the small window
+  static final ValueNotifier<bool> inPip = ValueNotifier<bool>(false);
+
+  /// what the small window shows
+  static final ValueNotifier<bool> micOn = ValueNotifier<bool>(false);
+  static final ValueNotifier<String> speaking = ValueNotifier<String>('');
+  static final ValueNotifier<bool> onCall = ValueNotifier<bool>(false);
+
+  static bool _allowed = false;
+  static bool _wired = false;
+
+  static void _wire() {
+    if (_wired) return;
+    _wired = true;
+    _Native._ch.setMethodCallHandler((c) async {
+      if (c.method == 'pipChanged') inPip.value = c.arguments == true;
+      return null;
+    });
+  }
+
+  /// In class → leaving the app shows the small window. Class over → normal again.
+  static Future<void> _allow(bool on) async {
+    if (!_isAndroid || on == _allowed) return;
+    _allowed = on;
+    _wire();
+    try {
+      await _Native._ch.invokeMethod('pip', {'on': on});
+    } catch (e) {
+      debugPrint('Small window: $e');
+    }
+  }
+
+  static void _update(Call c, lk.Room? room) {
+    if (!_isAndroid || !_allowed || room == null) return;
+    micOn.value = room.localParticipant?.isMicrophoneEnabled() ?? false;
+    onCall.value = c._inCall;
+    String who = '';
+    for (final p in room.activeSpeakers) {
+      if (p is lk.RemoteParticipant && !Call._secret(p)) {
+        who = p.name.isEmpty ? p.identity : p.name;
+        break;
+      }
+    }
+    speaking.value = who;
+  }
+}
+
+class _Native {
+  static const MethodChannel _ch = MethodChannel('letsspeak/class_service');
+  static bool _on = false;
+
+  static Future<void> keepAlive(bool on) async {
+    if (!_isAndroid || on == _on) return;
+    _on = on;
+    try {
+      if (on) {
+        await _ch.invokeMethod('start', {'title': _bgTitle, 'text': _bgText});
+      } else {
+        await _ch.invokeMethod('stop');
+      }
+    } catch (e) {
+      debugPrint('Class background service: $e');
+    }
+  }
+
+  /// 📞 Is the phone in a call? (normal call or WhatsApp / other app call)
+  ///   mode: Android audio mode (0 normal, 1 ringing, 2 phone call, 3 voice chat)
+  static Future<({bool inCall, int mode})> callState({
+    required bool myMicOn,
+  }) async {
+    if (!_isAndroid) return (inCall: false, mode: -1);
+    try {
+      final m = await _ch.invokeMethod<Map<dynamic, dynamic>>('callState', {
+        'micOn': myMicOn,
+      });
+      return (
+        inCall: m?['phoneCall'] == true || m?['voipCall'] == true,
+        mode: (m?['mode'] as int?) ?? -1,
+      );
+    } catch (_) {
+      return (inCall: false, mode: -1);
+    }
+  }
+
+  /// After a call Android may leave the sound in "normal" mode → class sound
+  /// goes silent / to the wrong speaker. Put it back to "voice chat" mode.
+  static Future<void> restoreMode() async {
+    if (!_isAndroid) return;
+    try {
+      await _ch.invokeMethod('restoreMode');
+    } catch (_) {}
+  }
+
+  /// Android sound devices: [{type: bluetooth|headset, name: "..."}]
+  static Future<List<Map<String, String>>> outputs() async {
+    if (!_isAndroid) return const [];
+    try {
+      final list = await _ch.invokeMethod<List<dynamic>>('outputs');
+      return (list ?? const [])
+          .whereType<Map>()
+          .map(
+            (m) => {'type': '${m['type'] ?? ''}', 'name': '${m['name'] ?? ''}'},
+          )
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+}
+
+// -------------------------------------------------------------------------
+// 🔊 SOUND — where the class sound plays + how loud
+// -------------------------------------------------------------------------
+enum SoundOut { speaker, phone, bluetooth, headset }
+
+class ClassSound {
+  ClassSound._();
+
+  /// Where the sound plays now
+  static final ValueNotifier<SoundOut> route = ValueNotifier<SoundOut>(
+    SoundOut.speaker,
+  );
+
+  /// What this phone can use right now (Bluetooth / headphones only when connected)
+  static final ValueNotifier<List<SoundOut>> choices =
+      ValueNotifier<List<SoundOut>>(const [SoundOut.speaker, SoundOut.phone]);
+
+  /// Name of the Bluetooth device ("boAt Rockerz 255")
+  static final ValueNotifier<String> bluetoothName = ValueNotifier<String>('');
+
+  /// 0 = normal, 1 = loud (default), 2 = extra loud
+  static final ValueNotifier<int> level = ValueNotifier<int>(1);
+  // 🔊 not too high: a big boost also makes the noise loud + breaks echo-cancel (crackle / echo)
+  static const List<double> _gains = [1.0, 1.6, 2.2];
+
+  /// Sound choices only exist on phones (Chrome uses the computer's sound)
+  static bool get supported => _isMobile;
+
+  static Call? _call;
+  static Timer? _poll;
+  static bool _firstScan = true;
+  static bool _busy = false;
+
+  static void _attach(Call c) {
+    _call = c;
+    _firstScan = true;
+    if (!supported) return;
+    _poll?.cancel();
+    // new Bluetooth / headphones connected? (cheap check every 3 s while in class)
+    _poll = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
+    unawaited(refresh(apply: true));
+  }
+
+  static void _detach(Call c) {
+    if (_call != c) return;
+    _call = null;
+    _poll?.cancel();
+    _poll = null;
+  }
+
+  static String label(SoundOut o) {
+    switch (o) {
+      case SoundOut.speaker:
+        return 'Speaker';
+      case SoundOut.phone:
+        return 'Phone (ear)';
+      case SoundOut.bluetooth:
+        return bluetoothName.value.isEmpty ? 'Bluetooth' : bluetoothName.value;
+      case SoundOut.headset:
+        return 'Headphones';
+    }
+  }
+
+  static String levelLabel(int l) =>
+      const ['Normal', 'Loud', 'Extra loud'][l.clamp(0, 2)];
+
+  /// Look which devices are connected. A NEW Bluetooth / headphone → use it.
+  static Future<void> refresh({bool apply = false}) async {
+    if (!supported || _busy) return;
+    _busy = true;
+    try {
+      final found = <SoundOut>{SoundOut.speaker, SoundOut.phone};
+      String bt = '';
+      if (_isAndroid) {
+        for (final d in await _Native.outputs()) {
+          if (d['type'] == 'bluetooth') {
+            found.add(SoundOut.bluetooth);
+            if (bt.isEmpty) bt = d['name'] ?? '';
+          } else if (d['type'] == 'headset') {
+            found.add(SoundOut.headset);
+          }
+        }
+      } else {
+        try {
+          for (final d in await lk.Hardware.instance.audioOutputs()) {
+            final l = '${d.label} ${d.deviceId}'.toLowerCase();
+            if (l.contains('bluetooth') ||
+                l.contains('airpods') ||
+                l.contains('hands-free') ||
+                l.contains('hfp') ||
+                l.contains('a2dp')) {
+              found.add(SoundOut.bluetooth);
+              if (bt.isEmpty) bt = d.label;
+            } else if (l.contains('headphone') || l.contains('headset')) {
+              found.add(SoundOut.headset);
+            }
+          }
+        } catch (_) {}
+      }
+      // Bluetooth / headphones connected → the ear speaker can't be chosen (phone uses the headset)
+      if (found.contains(SoundOut.bluetooth) ||
+          found.contains(SoundOut.headset))
+        found.remove(SoundOut.phone);
+
+      final order = [
+        SoundOut.bluetooth,
+        SoundOut.headset,
+        SoundOut.speaker,
+        SoundOut.phone,
+      ];
+      final now = order.where(found.contains).toList();
+      final before = _firstScan ? const <SoundOut>[] : choices.value;
+      _firstScan = false;
+      bluetoothName.value = bt;
+      if (!listEquals(now, choices.value)) choices.value = now;
+
+      final justConnected = [
+        SoundOut.bluetooth,
+        SoundOut.headset,
+      ].where((o) => found.contains(o) && !before.contains(o)).toList();
+      if (justConnected.isNotEmpty) {
+        route.value = justConnected.first; // 🎧 connected → sound goes there
+        apply = true;
+      } else if (!found.contains(route.value)) {
+        route.value = SoundOut.speaker; // device gone → back to the loudspeaker
+        apply = true;
+      }
+      if (apply) await _apply();
+    } finally {
+      _busy = false;
+    }
+  }
+
+  /// Person picked where to hear the class
+  static Future<void> select(SoundOut o) async {
+    route.value = o;
+    await _apply();
+  }
+
+  static Future<void> setLevel(int l) async {
+    level.value = l.clamp(0, 2);
+    await _call?._applyGain();
+  }
+
+  static double get gain => _gains[level.value.clamp(0, 2)];
+
+  /// Students' voices are never boosted much (their room noise would get loud too)
+  static double get studentGain => gain > 1.3 ? 1.3 : gain;
+
+  static Future<void> _apply() async {
+    final room = _call?._room;
+    if (room == null || !supported) return;
+    try {
+      switch (route.value) {
+        case SoundOut.speaker:
+          // force → loudspeaker even if Bluetooth / headphones are connected
+          await room.setSpeakerOn(true, forceSpeakerOutput: true);
+          break;
+        case SoundOut.phone:
+          await room.setSpeakerOn(false);
+          break;
+        case SoundOut.bluetooth:
+        case SoundOut.headset:
+          // Bluetooth / headphones first; if they disconnect → loudspeaker (not the quiet ear speaker)
+          await room.setSpeakerOn(true, forceSpeakerOutput: false);
+          break;
+      }
+    } catch (e) {
+      debugPrint('Sound route error: $e');
+    }
+  }
 }
 
 // -------------------------------------------------------------------------
@@ -57,6 +400,9 @@ Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async
 enum Priority { verbose, debug, info, warning, error }
 
 enum TrackType { audio, video, screenShare }
+
+/// 📶 Internet of one person in the class
+enum NetQuality { unknown, excellent, good, poor, lost }
 
 class StreamVideoOptions {
   final Priority? logPriority;
@@ -67,8 +413,12 @@ class User {
   final String id;
   final String name;
   const User._(this.id, this.name);
-  factory User.regular({required String userId, String? name, String? role, String? image}) =>
-      User._(userId, name ?? '');
+  factory User.regular({
+    required String userId,
+    String? name,
+    String? role,
+    String? image,
+  }) => User._(userId, name ?? '');
 }
 
 class StreamCallType {
@@ -132,6 +482,9 @@ class CallParticipantState {
   final bool isVideoEnabled;
   final List<String> roles; // ['admin'] = trainer / admin
   final String? image;
+
+  /// 📶 this person's internet
+  final NetQuality quality;
   const CallParticipantState({
     required this.userId,
     required this.name,
@@ -142,7 +495,14 @@ class CallParticipantState {
     required this.roles,
     this.isVideoEnabled = false,
     this.image,
+    this.quality = NetQuality.unknown,
   });
+
+  /// true → show "weak internet"
+  bool get weakNet => quality == NetQuality.poor || quality == NetQuality.lost;
+
+  /// trainer / admin
+  bool get isStaff => roles.contains('admin');
 }
 
 class CallState {
@@ -173,7 +533,8 @@ class CallState {
 class CallStateHolder {
   CallStateHolder(this._value);
   CallState _value;
-  final StreamController<CallState> _ctrl = StreamController<CallState>.broadcast();
+  final StreamController<CallState> _ctrl =
+      StreamController<CallState>.broadcast();
 
   CallState get value => _value;
   Stream<CallState> asStream() => _ctrl.stream;
@@ -204,7 +565,12 @@ class StreamVideo {
   final User user;
   static final Set<Call> _active = <Call>{};
 
-  StreamVideo(this.apiKey, {required this.user, String? userToken, StreamVideoOptions? options});
+  StreamVideo(
+    this.apiKey, {
+    required this.user,
+    String? userToken,
+    StreamVideoOptions? options,
+  });
 
   /// Leaves every open class (e.g. on logout / user change)
   static Future<void> reset({bool disconnect = false}) async {
@@ -214,7 +580,8 @@ class StreamVideo {
     }
   }
 
-  Call makeCall({required StreamCallType callType, required String id}) => Call._(id, user);
+  Call makeCall({required StreamCallType callType, required String id}) =>
+      Call._(id, user);
 }
 
 // -------------------------------------------------------------------------
@@ -222,16 +589,52 @@ class StreamVideo {
 // -------------------------------------------------------------------------
 class Call {
   Call._(this.id, this._user)
-      : state = CallStateHolder(CallState(
+    : state = CallStateHolder(
+        CallState(
           callId: id,
           status: CallStatus.idle,
           callParticipants: const [],
           custom: const {},
-        ));
+        ),
+      );
 
   final String id;
   final User _user;
   final CallStateHolder state;
+
+  // ---------------------------------------------------------------------
+  // 🌐 WEB SOUND: Chrome only plays sound after the person taps the page.
+  // We start the class sound right after joining, on every new voice, and on
+  // the next tap anywhere in the app (if Chrome blocked it before).
+  // ---------------------------------------------------------------------
+  static bool _tapHooked = false;
+
+  static void _webUnlockOnTap() {
+    if (_tapHooked) return;
+    _tapHooked = true;
+    GestureBinding.instance.pointerRouter.addGlobalRoute((PointerEvent e) {
+      if (e is! PointerDownEvent) return;
+      for (final c in StreamVideo._active.toList()) {
+        final r = c._room;
+        if (r != null && !r.canPlaybackAudio) _webStartAudio(r);
+      }
+    });
+  }
+
+  static void _webStartAudio(lk.Room room) {
+    try {
+      room.startAudio().catchError((_) {});
+    } catch (_) {}
+  }
+
+  /// 🌐 true when Chrome is still blocking the class sound (show "Tap to hear")
+  bool get soundBlocked => kIsWeb && _room != null && !_room!.canPlaybackAudio;
+
+  Future<void> unlockSound() async {
+    final r = _room;
+    if (r != null) _webStartAudio(r);
+    _emitNow();
+  }
 
   lk.Room? _room;
   lk.EventsListener<lk.RoomEvent>? _listener;
@@ -242,9 +645,35 @@ class Call {
   Timer? _emitTimer;
   bool _left = false;
 
+  // 🛟 join again by itself after the connection is lost
+  bool _wantMic = false; // mic was on → switch it on again after rejoining
+  DateTime? _lostAt;
+  int _tries = 0;
+  Timer? _rejoinTimer;
+  bool _rejoining = false;
+  AppLifecycleListener? _life;
+  static final math.Random _rnd = math.Random();
+
+  // 📞 phone / WhatsApp call during the class
+  Timer? _callWatch;
+  bool _inCall = false;
+  bool _micBeforeCall = false;
+  bool _checkingCall = false;
+
+  /// true while the person is on a phone / WhatsApp call (screens may show it)
+  bool get inPhoneCall => _inCall;
+
+  /// How long we keep trying before we give up ("connection was lost")
+  static const Duration _giveUpAfter = Duration(minutes: 3);
+
   // ✋ raise hand + class messages
-  final StreamController<ClassSignal> _signals = StreamController<ClassSignal>.broadcast();
+  final StreamController<ClassSignal> _signals =
+      StreamController<ClassSignal>.broadcast();
   Stream<ClassSignal> get signals => _signals.stream;
+
+  /// 🕵️ Admin / principal watching the class: NEVER shown in any list or count
+  /// (their voice still plays when they speak). Server names them "observer_<id>".
+  static bool _secret(lk.Participant p) => p.identity.startsWith('observer_');
 
   static bool _isStaffMeta(String? meta) {
     try {
@@ -256,10 +685,14 @@ class Call {
   }
 
   /// Trainers / admins in the class right now (user ids)
-  List<String> get staffIds => (_room?.remoteParticipants.values ?? const <lk.RemoteParticipant>[])
-      .where((p) => _isStaffMeta(p.metadata))
-      .map((p) => p.identity)
-      .toList();
+  List<String> get staffIds =>
+      (_room?.remoteParticipants.values ?? const <lk.RemoteParticipant>[])
+          .where((p) => !_secret(p) && _isStaffMeta(p.metadata))
+          .map((p) => p.identity)
+          .toList();
+
+  /// 📶 My own internet right now
+  NetQuality get myQuality => _q(_room?.localParticipant?.connectionQuality);
 
   /// Send a small message. to = null → everyone, else only those user ids.
   Future<bool> sendSignal(Map<String, dynamic> data, {List<String>? to}) async {
@@ -286,12 +719,15 @@ class Call {
       final d = jsonDecode(utf8.decode(e.data));
       if (d is! Map) return;
       final p = e.participant;
-      _signals.add(ClassSignal(
-        p?.identity ?? '',
-        (p == null || p.name.isEmpty) ? (p?.identity ?? '') : p.name,
-        _isStaffMeta(p?.metadata),
-        Map<String, dynamic>.from(d),
-      ));
+      if (p != null && _secret(p)) return; // admin never sends class signals
+      _signals.add(
+        ClassSignal(
+          p?.identity ?? '',
+          (p == null || p.name.isEmpty) ? (p?.identity ?? '') : p.name,
+          _isStaffMeta(p?.metadata),
+          Map<String, dynamic>.from(d),
+        ),
+      );
     } catch (_) {}
   }
 
@@ -300,7 +736,9 @@ class Call {
   bool lightweight = false;
 
   /// Everyone in the class (works in lightweight mode too)
-  int get peopleCount => _room == null ? 0 : _room!.remoteParticipants.length + 1;
+  int get peopleCount => _room == null
+      ? 0
+      : _room!.remoteParticipants.values.where((p) => !_secret(p)).length + 1;
 
   String get callCid => 'default:$id';
   String get userId => _user.id;
@@ -309,63 +747,17 @@ class Call {
   Future<Result<void>> getOrCreate() async => Result.success<void>();
 
   Future<Result<void>> join({CallConnectOptions? connectOptions}) async {
+    _left = false;
+    _endedAt = null;
+    _lostAt = null;
+    _tries = 0;
+    _rejoinTimer?.cancel();
+    _status = CallStatus.connecting;
+    _emitNow();
+    _wantMic = connectOptions?.microphone.isOn ?? false;
     try {
-      _left = false;
-      _endedAt = null;
-      _status = CallStatus.connecting;
-      _emitNow();
-
-      final data = await _post('/rtc/room-token', {'room': id});
-      final url = (data['url'] ?? '').toString();
-      final token = (data['token'] ?? '').toString();
-      if (url.isEmpty || token.isEmpty) throw Exception('Class access missing');
-
-      final room = lk.Room(
-        roomOptions: const lk.RoomOptions(
-          adaptiveStream: true,
-          dynacast: true,
-          // 🎧 speech: silence is not sent (dtx) + protection against lost packets (red)
-          defaultAudioPublishOptions: lk.AudioPublishOptions(dtx: true, red: true),
-        ),
-      );
-      _room = room;
-      final listener = room.createListener();
-      _listener = listener;
-      listener.listen((event) {
-        if (event is lk.DataReceivedEvent) {
-          _onData(event);
-          return;
-        }
-        if (event is lk.RoomDisconnectedEvent) {
-          if (event.reason == lk.DisconnectReason.roomDeleted) {
-            _endedAt = DateTime.now(); // trainer ended the class for everyone
-          }
-          _status = CallStatus.disconnected;
-          _emitNow();
-          return;
-        }
-        if (event is lk.RoomReconnectingEvent) _status = CallStatus.reconnecting;
-        if (event is lk.RoomReconnectedEvent) _status = CallStatus.connected;
-        _scheduleEmit();
-      });
-      room.addListener(_scheduleEmit);
-
-      await room.connect(url, token, connectOptions: const lk.ConnectOptions(autoSubscribe: true));
-      _status = CallStatus.connected;
-      StreamVideo._active.add(this);
-      try {
-        await room.setSpeakerOn(true); // 🔊 class on the loudspeaker (headphones / Bluetooth still win)
-      } catch (_) {}
-
-      final micOn = connectOptions?.microphone.isOn ?? false;
-      if (micOn) {
-        try {
-          await room.localParticipant?.setMicrophoneEnabled(true);
-        } catch (e) {
-          debugPrint('Mic start error: $e');
-        }
-      }
-      _emitNow();
+      await _connect();
+      _whenConnected();
       return Result.success<void>();
     } catch (e) {
       debugPrint('LiveKit join error: $e');
@@ -376,17 +768,302 @@ class Call {
     }
   }
 
+  /// Token from our server → connect to LiveKit → sound + mic like before
+  Future<void> _connect() async {
+    final data = await _post('/rtc/room-token', {'room': id});
+    final url = (data['url'] ?? '').toString();
+    final token = (data['token'] ?? '').toString();
+    if (url.isEmpty || token.isEmpty) throw Exception('Class access missing');
+
+    final room = lk.Room(
+      roomOptions: lk.RoomOptions(
+        adaptiveStream: true,
+        dynacast: true,
+        // 🎙 clear voice: echo cancel + noise cancel + auto volume (quiet voices get louder)
+        //    + low-hum filter (fan / AC / traffic rumble)
+        defaultAudioCaptureOptions: const lk.AudioCaptureOptions(
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          highPassFilter: true,
+          voiceIsolation: true,
+          typingNoiseDetection: true,
+        ),
+        // 🎧 speech: silence is not sent (dtx) + protection against lost packets (red)
+        //    🌐 web (Chrome): plain Opus — RED/DTX can make the voice silent in the browser
+        defaultAudioPublishOptions: lk.AudioPublishOptions(
+          dtx: !kIsWeb,
+          red: !kIsWeb,
+          // 🗣 speech quality (24 kbps) instead of music (48 kbps): voice sounds the same,
+          //    but 2,000 listeners need half the server bandwidth
+          encoding: lk.AudioEncoding.presetSpeech,
+        ),
+      ),
+    );
+    _room = room;
+    final listener = room.createListener();
+    _listener = listener;
+    listener.listen((event) => _onRoomEvent(room, event));
+    room.addListener(_scheduleEmit);
+
+    await room.connect(
+      url,
+      token,
+      connectOptions: const lk.ConnectOptions(autoSubscribe: true),
+    );
+    if (kIsWeb) {
+      _webUnlockOnTap();
+      _webStartAudio(room);
+    }
+    _status = CallStatus.connected;
+    StreamVideo._active.add(this);
+    ClassSound._attach(
+      this,
+    ); // 🔊 speaker / Bluetooth / headphones (headphones win when connected)
+    await ClassSound._apply();
+    await _applyGain();
+
+    if (_wantMic) {
+      try {
+        await room.localParticipant?.setMicrophoneEnabled(true);
+      } catch (e) {
+        debugPrint('Mic start error: $e');
+      }
+    }
+  }
+
+  void _onRoomEvent(lk.Room room, lk.RoomEvent event) {
+    if (room != _room) return; // old room after a rejoin
+    if (event is lk.DataReceivedEvent) {
+      _onData(event);
+      return;
+    }
+    if (event is lk.RoomDisconnectedEvent) {
+      _onDisconnected(event.reason);
+      return;
+    }
+    // 🔊 every new voice gets the "loud" volume
+    if (event is lk.TrackSubscribedEvent &&
+        event.track is lk.RemoteAudioTrack) {
+      unawaited(_gainFor(event.participant, event.track));
+    }
+    // 🤫 noise gate: open a student's voice only while they really speak
+    if (event is lk.ActiveSpeakersChangedEvent) _onSpeakers(event.speakers);
+    // 🌐 web: Chrome blocks sound until a tap → try to start it on every new voice
+    if (kIsWeb && event is lk.TrackSubscribedEvent) _webStartAudio(room);
+    if (event is lk.RoomReconnectingEvent) _status = CallStatus.reconnecting;
+    if (event is lk.RoomReconnectedEvent) {
+      _status = CallStatus.connected;
+      unawaited(ClassSound._apply());
+    }
+    _scheduleEmit();
+  }
+
+  /// Joined (first time or again) → class runs in the background too
+  void _whenConnected() {
+    _lostAt = null;
+    _tries = 0;
+    _status = CallStatus.connected;
+    unawaited(_Native.keepAlive(true));
+    _keepScreenOn(true); // 🔆 phone does not go to sleep in class
+    _startCallWatch();
+    _life ??= AppLifecycleListener(onResume: _onAppResume);
+    _emitNow();
+  }
+
+  static void _keepScreenOn(bool on) {
+    try {
+      if (on) {
+        WakelockPlus.enable();
+      } else if (StreamVideo._active.isEmpty) {
+        WakelockPlus.disable();
+      }
+    } catch (_) {}
+    // 📺 small window over other apps: only while a class is running
+    unawaited(ClassPip._allow(on || StreamVideo._active.isNotEmpty));
+  }
+
+  // -------------------------------------------------------------------
+  // 📞 Calls: every 2 s look if the phone is in a call
+  // -------------------------------------------------------------------
+  void _startCallWatch() {
+    if (!_isAndroid || _callWatch != null) return;
+    _callWatch = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => _checkCall(),
+    );
+  }
+
+  void _stopCallWatch() {
+    _callWatch?.cancel();
+    _callWatch = null;
+  }
+
+  Future<void> _checkCall() async {
+    final room = _room;
+    if (room == null || _checkingCall || _left) return;
+    _checkingCall = true;
+    try {
+      final me = room.localParticipant;
+      final micOn = me?.isMicrophoneEnabled() ?? false;
+      final st = await _Native.callState(myMicOn: micOn);
+      if (st.inCall && !_inCall) {
+        // 📞 call started → my mic off (class can't hear the call) + class sound off
+        _inCall = true;
+        _micBeforeCall = micOn;
+        if (micOn) {
+          try {
+            await me?.setMicrophoneEnabled(false);
+          } catch (_) {}
+        }
+        await _applyGain();
+        _emitNow();
+        debugPrint('📞 Call started → class paused on this phone');
+      } else if (!st.inCall && _inCall) {
+        // 📞 call ended → sound back where it was + mic back on (if it was on)
+        _inCall = false;
+        await _Native.restoreMode();
+        await ClassSound._apply();
+        await _applyGain();
+        if (_micBeforeCall && _wantMic) {
+          try {
+            await room.localParticipant?.setMicrophoneEnabled(true);
+          } catch (_) {}
+        }
+        _micBeforeCall = false;
+        _emitNow();
+        debugPrint('📞 Call ended → class sound + mic back');
+      } else if (!st.inCall && st.mode == 0) {
+        // another app left the sound in "normal" mode → class may be silent
+        await _Native.restoreMode();
+        await ClassSound._apply();
+      }
+    } finally {
+      _checkingCall = false;
+    }
+  }
+
+  void _onDisconnected(lk.DisconnectReason? reason) {
+    if (_left) return;
+    // final: trainer ended the class / removed this person / same account joined on another phone
+    if (reason == lk.DisconnectReason.roomDeleted) {
+      _endedAt = DateTime.now(); // trainer ended the class for everyone
+      _finish();
+      return;
+    }
+    if (reason == lk.DisconnectReason.participantRemoved ||
+        reason == lk.DisconnectReason.duplicateIdentity ||
+        reason == lk.DisconnectReason.clientInitiated) {
+      _finish();
+      return;
+    }
+    // 📶 network gone / phone call / app was paused → join again by itself
+    _scheduleRejoin();
+  }
+
+  /// Give up for good → screens close the class
+  void _finish() {
+    _rejoinTimer?.cancel();
+    _stopCallWatch();
+    _life?.dispose();
+    _life = null;
+    _status = CallStatus.disconnected;
+    _emitNow();
+    StreamVideo._active.remove(this); // this class is over on this phone
+    unawaited(_Native.keepAlive(StreamVideo._active.isNotEmpty));
+    _keepScreenOn(false);
+    ClassSound._detach(this);
+  }
+
+  void _scheduleRejoin() {
+    if (_left || _endedAt != null) return;
+    final now = DateTime.now();
+    _lostAt ??= now;
+    if (now.difference(_lostAt!) > _giveUpAfter) {
+      unawaited(_closeRoom());
+      _finish();
+      return;
+    }
+    _status = CallStatus.reconnecting;
+    _emitNow();
+    _rejoinTimer?.cancel();
+    const steps = [0, 1, 2, 3, 5, 5, 8, 10];
+    final secs = steps[math.min(_tries, steps.length - 1)];
+    // big special class: spread the rejoins so 2,000 phones don't hit the server together
+    final jitter = _rnd.nextInt(lightweight ? 8000 : 1200);
+    _tries++;
+    _rejoinTimer = Timer(
+      Duration(milliseconds: secs * 1000 + jitter),
+      _rejoinNow,
+    );
+  }
+
+  Future<void> _rejoinNow() async {
+    if (_left || _endedAt != null || _rejoining) return;
+    _rejoining = true;
+    try {
+      await _closeRoom(keepAlive: true);
+      if (_left) return;
+      _status = CallStatus.reconnecting;
+      await _connect();
+      if (_left) {
+        await _closeRoom();
+        return;
+      }
+      _whenConnected();
+      debugPrint('🛟 Class: joined again');
+    } catch (e) {
+      debugPrint('🛟 Class rejoin failed: $e');
+      await _closeRoom(keepAlive: true);
+      // server says no (class ended / not allowed) → stop trying
+      if (e is _ServerError &&
+          (e.code == 401 || e.code == 403 || e.code == 404)) {
+        _finish();
+      } else {
+        _scheduleRejoin();
+      }
+    } finally {
+      _rejoining = false;
+    }
+  }
+
+  /// Back in the app → if the class is still rejoining, try right now
+  void _onAppResume() {
+    if (_left || _endedAt != null) return;
+    if (_status.isReconnecting &&
+        _rejoinTimer != null &&
+        _rejoinTimer!.isActive &&
+        !_rejoining) {
+      _rejoinTimer!.cancel();
+      unawaited(_rejoinNow());
+    }
+    // after a phone call Android may move the sound → put it back where the person chose
+    if (_room != null) unawaited(ClassSound.refresh(apply: true));
+    _emitNow();
+  }
+
   Future<Result<void>> leave() async {
     _left = true;
+    _rejoinTimer?.cancel();
+    _stopCallWatch();
+    _inCall = false;
+    _life?.dispose();
+    _life = null;
     await _closeRoom();
+    _keepScreenOn(false);
     _status = CallStatus.disconnected;
     _emitNow();
     return Result.success<void>();
   }
 
-  Future<void> _closeRoom() async {
+  Future<void> _closeRoom({bool keepAlive = false}) async {
+    _clearGate();
     StreamVideo._active.remove(this);
     _emitTimer?.cancel();
+    if (!keepAlive) {
+      ClassSound._detach(this);
+      unawaited(_Native.keepAlive(StreamVideo._active.isNotEmpty));
+    }
     final room = _room;
     final listener = _listener;
     _room = null;
@@ -405,9 +1082,107 @@ class Call {
     } catch (_) {}
   }
 
+  // ---------------------------------------------------------------------
+  // 🔊 louder voices (WebRTC gain 0…10 per voice; 1 = as received)
+  // ---------------------------------------------------------------------
+  Future<void> _gainFor(lk.Participant p, lk.Track track) async {
+    if (kIsWeb) return;
+    try {
+      await rtc.Helper.setVolume(_volumeFor(p), track.mediaStreamTrack);
+    } catch (e) {
+      debugPrint('Volume error: $e');
+    }
+  }
+
+  Future<void> _applyGain() async {
+    final room = _room;
+    if (room == null || kIsWeb) return;
+    for (final p in room.remoteParticipants.values) {
+      await _applyGainOf(p);
+    }
+  }
+
+  Future<void> _applyGainOf(lk.RemoteParticipant p) async {
+    for (final pub in p.audioTrackPublications) {
+      final t = pub.track;
+      if (t != null) await _gainFor(p, t);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // 🤫 NOISE GATE (big help in a class with many open mics)
+  // A student whose mic is on but who is NOT speaking only sends fan / traffic /
+  // TV / room noise. 30 such mics together = a lot of "shhhh". LiveKit tells us
+  // who is really speaking → only those voices play at full volume; the rest
+  // are almost silent. Trainer / admin / Surendra Sir are always heard fully.
+  // ---------------------------------------------------------------------
+  static const double _gateFloor =
+      0.08; // not speaking → ~ -22 dB (noise nearly gone)
+  static const Duration _gateHold = Duration(
+    milliseconds: 1500,
+  ); // keeps pauses between words
+  final Set<String> _gateOpen = <String>{};
+  final Map<String, Timer> _gateTimers = <String, Timer>{};
+
+  bool _alwaysHeard(lk.Participant p) => _secret(p) || _isStaffMeta(p.metadata);
+
+  double _volumeFor(lk.Participant p) {
+    if (_inCall)
+      return 0.0; // 📞 in a phone call → class sound off on this phone
+    if (_alwaysHeard(p)) return ClassSound.gain;
+    return _gateOpen.contains(p.identity) ? ClassSound.studentGain : _gateFloor;
+  }
+
+  void _onSpeakers(List<lk.Participant> speakers) {
+    final room = _room;
+    if (room == null || kIsWeb) return;
+    final now = <String>{
+      for (final p in speakers)
+        if (p is lk.RemoteParticipant && !_alwaysHeard(p)) p.identity,
+    };
+    for (final id in now) {
+      _gateTimers.remove(id)?.cancel(); // still speaking → keep open
+      if (_gateOpen.add(id)) _regain(id);
+    }
+    for (final id in _gateOpen.toList()) {
+      if (now.contains(id) || _gateTimers.containsKey(id)) continue;
+      // stopped speaking → close a little later (not between words)
+      _gateTimers[id] = Timer(_gateHold, () {
+        _gateTimers.remove(id);
+        if (_gateOpen.remove(id)) _regain(id);
+      });
+    }
+  }
+
+  void _regain(String identity) {
+    final room = _room;
+    if (room == null) return;
+    for (final p in room.remoteParticipants.values) {
+      if (p.identity == identity) {
+        unawaited(_applyGainOf(p));
+        return;
+      }
+    }
+  }
+
+  void _clearGate() {
+    for (final t in _gateTimers.values) {
+      t.cancel();
+    }
+    _gateTimers.clear();
+    _gateOpen.clear();
+  }
+
   Future<Result<void>> setMicrophoneEnabled({required bool enabled}) async {
     try {
+      if (enabled && _inCall) {
+        // 📞 still on a call → turn the mic on when the call ends
+        _wantMic = true;
+        _micBeforeCall = true;
+        return Result.success<void>();
+      }
       await _room?.localParticipant?.setMicrophoneEnabled(enabled);
+      _wantMic = enabled;
       _emitNow();
       return Result.success<void>();
     } catch (e) {
@@ -416,13 +1191,16 @@ class Call {
   }
 
   /// Audio classes: the camera is never used
-  Future<Result<void>> setCameraEnabled({required bool enabled}) async => Result.success<void>();
+  Future<Result<void>> setCameraEnabled({required bool enabled}) async =>
+      Result.success<void>();
 
   /// Trainer: share mic lock + practice state with everyone in the class
   Future<Result<void>> update({Map<String, Object>? custom}) async {
     try {
       final c = custom ?? const <String, Object>{};
-      _custom = Map<String, Object>.from(c); // trainer's own screen updates at once
+      _custom = Map<String, Object>.from(
+        c,
+      ); // trainer's own screen updates at once
       _emitNow();
       await _post('/rtc/room/state', {'room': id, 'custom': c});
       return Result.success<void>();
@@ -464,6 +1242,7 @@ class Call {
     try {
       await _post('/rtc/room/end', {'room': id});
       _endedAt = DateTime.now();
+      _rejoinTimer?.cancel();
       _emitNow();
       return Result.success<void>();
     } catch (e) {
@@ -484,7 +1263,7 @@ class Call {
   void _emitNow() {
     _emitTimer?.cancel();
     final room = _room;
-    if (room != null) {
+    if (room != null && !_rejoining) {
       switch (room.connectionState) {
         case lk.ConnectionState.connected:
           _status = CallStatus.connected;
@@ -493,21 +1272,34 @@ class Call {
           _status = CallStatus.reconnecting;
           break;
         case lk.ConnectionState.connecting:
-          _status = CallStatus.connecting;
+          // first join → "connecting"; a rejoin keeps showing "reconnecting"
+          if (!_status.isReconnecting) _status = CallStatus.connecting;
           break;
         case lk.ConnectionState.disconnected:
-          if (!_status.isIdle && !_status.isConnecting) _status = CallStatus.disconnected;
+          // our own rejoin is running → still "reconnecting", not the end
+          if (!_status.isIdle &&
+              !_status.isConnecting &&
+              !_status.isReconnecting) {
+            _status = CallStatus.disconnected;
+          }
           break;
       }
       _readMetadata(room.metadata);
     }
-    state._set(CallState(
-      callId: id,
-      status: _left ? CallStatus.disconnected : _status,
-      callParticipants: room == null || _status.isDisconnected ? const [] : _participants(room),
-      custom: _custom,
-      endedAt: _endedAt,
-    ));
+    final hasList =
+        room != null &&
+        !_status.isDisconnected &&
+        room.connectionState != lk.ConnectionState.disconnected;
+    ClassPip._update(this, room); // 📺 small window text
+    state._set(
+      CallState(
+        callId: id,
+        status: _left ? CallStatus.disconnected : _status,
+        callParticipants: hasList ? _participants(room) : const [],
+        custom: _custom,
+        endedAt: _endedAt,
+      ),
+    );
   }
 
   void _readMetadata(String? text) {
@@ -531,17 +1323,34 @@ class Call {
     if (me != null) out.add(_toState(me, true));
     if (lightweight) {
       for (final p in room.activeSpeakers) {
-        if (p is lk.RemoteParticipant) out.add(_toState(p, false));
+        if (p is lk.RemoteParticipant && !_secret(p))
+          out.add(_toState(p, false));
       }
       return out;
     }
     for (final p in room.remoteParticipants.values) {
+      if (_secret(p)) continue; // hidden admin
       out.add(_toState(p, false));
     }
     return out;
   }
 
   static final Map<String, List<String>> _roleCache = {};
+
+  static NetQuality _q(lk.ConnectionQuality? q) {
+    switch (q) {
+      case lk.ConnectionQuality.excellent:
+        return NetQuality.excellent;
+      case lk.ConnectionQuality.good:
+        return NetQuality.good;
+      case lk.ConnectionQuality.poor:
+        return NetQuality.poor;
+      case lk.ConnectionQuality.lost:
+        return NetQuality.lost;
+      default:
+        return NetQuality.unknown;
+    }
+  }
 
   CallParticipantState _toState(lk.Participant p, bool local) {
     final meta = p.metadata ?? '';
@@ -561,6 +1370,7 @@ class Call {
       isSpeaking: p.isSpeaking,
       isAudioEnabled: p.isMicrophoneEnabled(),
       roles: roles,
+      quality: _q(p.connectionQuality),
     );
   }
 

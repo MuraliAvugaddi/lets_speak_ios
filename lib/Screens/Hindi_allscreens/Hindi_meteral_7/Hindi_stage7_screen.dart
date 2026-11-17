@@ -1,9 +1,15 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:http/http.dart' as http;
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lets_talk/Screens/English_meteral_5/English_stage1_screen.dart';
 import 'package:lets_talk/Screens/app_colors.dart';
+import 'package:lets_talk/apis/api_endpoint.dart';
+import 'package:lets_talk/Controllers/authContoller.dart';
 
 class HindiStage7Screen extends StatefulWidget {
   const HindiStage7Screen({super.key});
@@ -30,9 +36,11 @@ class _HindiStage7ScreenState extends State<HindiStage7Screen> {
         ? AppColors.darkTextSecondary
         : AppColors.textSecondary;
 
+    final systemBarColor = AppColors.navy;
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
+        statusBarColor: systemBarColor,
         statusBarIconBrightness: Brightness.light,
         statusBarBrightness: Brightness.dark,
         systemNavigationBarColor: background,
@@ -41,23 +49,30 @@ class _HindiStage7ScreenState extends State<HindiStage7Screen> {
             : Brightness.dark,
       ),
       child: Scaffold(
-        backgroundColor: AppColors.navy,
-        body: Column(
-          children: [
-            // Fixed modern app bar with internal SafeArea to fill iOS notch
-            Container(
-              width: double.infinity,
-              decoration: const BoxDecoration(
-                color: AppColors.navy,
-                borderRadius: BorderRadius.only(
-                  bottomLeft: Radius.circular(24),
-                  bottomRight: Radius.circular(24),
+        backgroundColor: background,
+        body: SafeArea(
+          top: false, // 🎨 blue header goes behind the status bar (Android 15)
+          bottom: false,
+          child: Column(
+            children: [
+              // Fixed app bar (clean, with back button and title only)
+              Container(
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  color: AppColors.navy,
+                  borderRadius: BorderRadius.only(
+                    bottomLeft: Radius.circular(24),
+                    bottomRight: Radius.circular(24),
+                  ),
                 ),
-              ),
-              child: SafeArea(
-                bottom: false,
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                  // status bar height + 8 → header text stays below the clock
+                  padding: EdgeInsets.fromLTRB(
+                    10,
+                    MediaQuery.paddingOf(context).top + 8,
+                    10,
+                    10,
+                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -170,103 +185,96 @@ class _HindiStage7ScreenState extends State<HindiStage7Screen> {
                   ),
                 ),
               ),
-            ),
 
-            // Content container fills remaining area with screen background
-            Expanded(
-              child: Container(
-                color: background,
-                child: Column(
-                  children: [
-                    // Pinned / Non-scrolling Attendance Widget
-                    const StageAttendanceWidget(stageName: 'Stage 7'),
+              // Pinned / Non-scrolling Attendance Widget
+              const StageAttendanceWidget(
+                stageName: 'Stage 7',
+                language: 'Hindi',
+              ),
 
-                    // Scrollable area featuring the "Coming Soon" state with pull-to-refresh
-                    Expanded(
-                      child: RefreshIndicator(
-                        onRefresh: _onRefresh,
-                        color: AppColors.teal,
-                        backgroundColor: surface,
-                        child: CustomScrollView(
-                          physics: const AlwaysScrollableScrollPhysics(
-                            parent: BouncingScrollPhysics(),
+              // Scrollable area featuring the "Coming Soon" state with pull-to-refresh
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: _onRefresh,
+                  color: AppColors.teal,
+                  backgroundColor: surface,
+                  child: CustomScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(
+                      parent: BouncingScrollPhysics(),
+                    ),
+                    slivers: [
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+                        sliver: SliverToBoxAdapter(
+                          child: _CourseHero(
+                            isDark: isDark,
+                            title: 'Mastery Level Library',
+                            subtitle:
+                                'Advanced curriculum materials for Stage 7 are currently under development.',
                           ),
-                          slivers: [
-                            SliverPadding(
-                              padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
-                              sliver: SliverToBoxAdapter(
-                                child: _CourseHero(
-                                  isDark: isDark,
-                                  title: 'Mastery Level Library',
-                                  subtitle:
-                                      'Advanced curriculum materials for Stage 7 are currently under development.',
-                                ),
-                              ),
-                            ),
-                            SliverFillRemaining(
-                              hasScrollBody: false,
-                              child: Center(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 24,
-                                    vertical: 40,
-                                  ),
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Container(
-                                        width: 76,
-                                        height: 76,
-                                        decoration: BoxDecoration(
-                                          color: AppColors.teal.withValues(
-                                            alpha: 0.12,
-                                          ),
-                                          shape: BoxShape.circle,
-                                          border: Border.all(
-                                            color: AppColors.teal.withValues(
-                                              alpha: 0.3,
-                                            ),
-                                          ),
-                                        ),
-                                        child: const Icon(
-                                          Icons.hourglass_top_rounded,
-                                          color: AppColors.teal,
-                                          size: 36,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 18),
-                                      Text(
-                                        'Coming Soon!',
-                                        style: GoogleFonts.poppins(
-                                          color: text,
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w800,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        'Stage 7 Mastery lessons and resources will be available here soon. Stay tuned!',
-                                        textAlign: TextAlign.center,
-                                        style: GoogleFonts.poppins(
-                                          color: secondary,
-                                          fontSize: 12,
-                                          height: 1.5,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
                         ),
                       ),
-                    ),
-                  ],
+                      SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: Center(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 24,
+                              vertical: 40,
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  width: 76,
+                                  height: 76,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.teal.withValues(
+                                      alpha: 0.12,
+                                    ),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: AppColors.teal.withValues(
+                                        alpha: 0.3,
+                                      ),
+                                    ),
+                                  ),
+                                  child: const Icon(
+                                    Icons.hourglass_top_rounded,
+                                    color: AppColors.teal,
+                                    size: 36,
+                                  ),
+                                ),
+                                const SizedBox(height: 18),
+                                Text(
+                                  'Coming Soon!',
+                                  style: GoogleFonts.poppins(
+                                    color: text,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  'Stage 7 Mastery lessons and resources will be available here soon. Stay tuned!',
+                                  textAlign: TextAlign.center,
+                                  style: GoogleFonts.poppins(
+                                    color: secondary,
+                                    fontSize: 12,
+                                    height: 1.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
