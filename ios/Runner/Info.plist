@@ -2,12 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CADisableMinimumFrameDurationOnPhone</key>
-    <true/>
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
-    <string>Let's Speak with Surendra</string>
+    <string>Let's Speak</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -17,103 +15,32 @@
     <key>CFBundleName</key>
     <string>lets_talk</string>
     <key>CFBundlePackageType</key>
-    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
-    <key>CFBundleSignature</key>
-    <string>????</string>
+    <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>$(FLUTTER_BUILD_NAME)</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
     <key>CFBundleVersion</key>
     <string>$(FLUTTER_BUILD_NUMBER)</string>
-
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeRole</key>
-            <string>Editor</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>app-1-823434055852-ios-f3d4eeeebfd4cd292ccf09</string>
-            </array>
-        </dict>
-    </array>
-
+    
     <key>LSApplicationQueriesSchemes</key>
     <array>
         <string>https</string>
         <string>http</string>
     </array>
+
     <key>LSRequiresIPhoneOS</key>
     <true/>
-
-    <!-- No custom encryption (only HTTPS) → skips the export-compliance question on every upload -->
-    <key>ITSAppUsesNonExemptEncryption</key>
-    <false/>
-
-    <!-- Location: only while the app is open (GPS attendance) -->
-    <key>NSLocationWhenInUseUsageDescription</key>
-    <string>Your location is used only when you mark attendance, to check that you are at the institute.</string>
-    <!-- Required by Apple because the GPS package contains "always" code (fixes ITMS-90683) -->
-    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-    <string>Your location is used only when you mark attendance, to check that you are at the institute.</string>
-
-    <!-- Microphone: live classes -->
-    <key>NSMicrophoneUsageDescription</key>
-    <string>The microphone is used to speak in live classes and speaking practice with your trainer.</string>
-
-    <!-- Camera / photos: profile photo, fee receipt, save posters & reels -->
-    <key>NSCameraUsageDescription</key>
-    <string>The camera is used to take your profile photo.</string>
-    <key>NSPhotoLibraryUsageDescription</key>
-    <string>Your photo library is used to choose a profile photo, upload a fee receipt, or save Let's Speak posters and reels.</string>
-    <key>NSPhotoLibraryAddUsageDescription</key>
-    <string>Save Let's Speak posters, reels and study notes to your Photos.</string>
-    <!-- File picker package contains music-library code; prevents a future warning -->
-    <key>NSAppleMusicUsageDescription</key>
-    <string>Used only if you choose to attach an audio file.</string>
-
-    <key>UIApplicationSceneManifest</key>
-    <dict>
-        <key>UIApplicationSupportsMultipleScenes</key>
-        <false/>
-        <key>UISceneConfigurations</key>
-        <dict>
-            <key>UIWindowSceneSessionRoleApplication</key>
-            <array>
-                <dict>
-                    <key>UISceneClassName</key>
-                    <string>UIWindowScene</string>
-                    <key>UISceneConfigurationName</key>
-                    <string>flutter</string>
-                    <key>UISceneDelegateClassName</key>
-                    <string>FlutterSceneDelegate</string>
-                    <key>UISceneStoryboardFile</key>
-                    <string>Main</string>
-                </dict>
-            </array>
-        </dict>
-    </dict>
-    <key>UIApplicationSupportsIndirectInputEvents</key>
-    <true/>
-
-    <!-- audio = live class keeps playing when minimized; remote-notification = push notifications -->
-    <key>UIBackgroundModes</key>
-    <array>
-        <string>audio</string>
-        <string>remote-notification</string>
-    </array>
-
     <key>UILaunchStoryboardName</key>
     <string>LaunchScreen</string>
     <key>UIMainStoryboardFile</key>
     <string>Main</string>
-
-    <!-- iPhone: portrait only (the app is designed for portrait) -->
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
-
-    <!-- iPad: Apple requires all 4 orientations, otherwise the upload fails -->
     <key>UISupportedInterfaceOrientations~ipad</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
@@ -121,5 +48,35 @@
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
+    <key>CADisableMinimumFrameDurationOnPhone</key>
+    <true/>
+    <key>UIApplicationSupportsIndirectInputEvents</key>
+    <true/>
+
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>This app needs access to location when open to mark your attendance.</string>
+    <key>NSLocationAlwaysUsageDescription</key>
+    <string>This app needs access to location when in the background.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Your location is used only to mark your class attendance.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>The camera is used to take your profile photo.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Your photos are used to choose a profile photo or a file to share.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>Certificates and images are saved to your photos.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>The microphone is used to speak in your live English and Hindi classes.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Bluetooth is used to hear your live class on Bluetooth earphones.</string>
+	<!-- 🎧 class keeps playing with the screen off / in other apps; 🔔 push notifications -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>remote-notification</string>
+	</array>
+	<!-- no special encryption → App Store doesn't ask the export question every upload -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>
