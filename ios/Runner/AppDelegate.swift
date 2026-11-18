@@ -167,8 +167,18 @@ final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate, CXProvi
   }
 
   @objc private func onBecameActive() {
+    // 📺 back in the app → hide the small window (the app itself is on screen now;
+    //    it comes back by itself the next time the student leaves the app)
+    hidePipWindow()
     // back in the app after a call → make sure the class sound is on again
     soundBack()  // (does nothing while another call is still going on)
+  }
+
+  private func hidePipWindow() {
+    guard #available(iOS 15.0, *) else { return }
+    if let pip = pipController as? AVPictureInPictureController, pip.isPictureInPictureActive {
+      pip.stopPictureInPicture()
+    }
   }
 
   private func soundBack() {
@@ -221,10 +231,12 @@ final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate, CXProvi
           return
         }
         if let error = error {
+          // (most common reason: "voip" missing in Info.plist → UIBackgroundModes)
           print("[LetsSpeak] class call could not start: \(error)")
           result(false)
           return
         }
+        print("[LetsSpeak] 📞 class is running as an iPhone call")
         self.classCallId = id
         self.classHeld = false
         self.provider.reportOutgoingCall(with: id, startedConnectingAt: Date())
