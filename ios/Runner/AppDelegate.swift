@@ -50,11 +50,32 @@ import flutter_local_notifications
 //  📺 Small window: in class → student opens WhatsApp / home → the class shows
 //     as a small floating window (iOS 15+). Tap it → back to the class.
 // =============================================================================
-final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate {
+final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate, CXProviderDelegate,
+  CXCallObserverDelegate
+{
   static let shared = ClassBridge()
 
+  // 📞 the class itself as an iPhone call (CallKit) → a ringing phone does NOT
+  //    silence the class; answered → class on hold; call over → class back
+  private lazy var provider: CXProvider = {
+    let cfg = CXProviderConfiguration()
+    cfg.supportsVideo = false
+    cfg.maximumCallGroups = 1
+    cfg.maximumCallsPerCallGroup = 1
+    cfg.supportedHandleTypes = [.generic]
+    cfg.includesCallsInRecents = false  // the class doesn't show in the Phone app
+    let p = CXProvider(configuration: cfg)
+    p.setDelegate(self, queue: nil)
+    return p
+  }()
+  private let callController = CXCallController()
+  private var classCallId: UUID?
+  private var classTitle = "Let's Speak • Live class"
+  private var classWanted = false
+  private var classHeld = false
+
   private var channel: FlutterMethodChannel?
-  private let callObserver = CXCallObserver()
+  private let phoneCalls = CXCallObserver()
   private var bgTask: UIBackgroundTaskIdentifier = .invalid
 
   // small window
@@ -75,6 +96,16 @@ final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate {
       switch call.method {
       case "callState":
         result(self.callState())
+      case "classCall":
+        let args = call.arguments as? [String: Any] ?? [:]
+        let on = args["on"] as? Bool ?? false
+        if let t = args["title"] as? String, !t.isEmpty { self.classTitle = t }
+        DispatchQueue.main.async {
+          if on { self.startClassCall(result) } else {
+            self.endClassCall()
+            result(true)
+          }
+        }
       case "pip":
         let on = (call.arguments as? [String: Any])?["on"] as? Bool ?? false
         DispatchQueue.main.async {
@@ -95,6 +126,7 @@ final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate {
       }
     }
 
+    phoneCalls.setDelegate(self, queue: nil)
     NotificationCenter.default.addObserver(
       self, selector: #selector(onInterruption(_:)),
       name: AVAudioSession.interruptionNotification, object: nil)
@@ -109,7 +141,8 @@ final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate {
   private func callState() -> [String: Any] {
     var answered = false
     var ringing = false
-    for c in callObserver.calls where !c.hasEnded {
+    // other calls only (the class itself is also a "call" now)
+    for c in phoneCalls.calls where !c.hasEnded && c.uuid != classCallId {
       if c.hasConnected || c.isOutgoing {
         answered = true
       } else {
@@ -135,15 +168,13 @@ final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate {
 
   @objc private func onBecameActive() {
     // back in the app after a call → make sure the class sound is on again
-    if bgTask != .invalid || callObserver.calls.isEmpty {
-      soundBack()
-    }
+    soundBack()  // (does nothing while another call is still going on)
   }
 
   private func soundBack() {
     endBackgroundTime()
     // only when no call is still going on
-    let busy = callObserver.calls.contains { !$0.hasEnded }
+    let busy = phoneCalls.calls.contains { !$0.hasEnded && $0.uuid != classCallId }
     if busy { return }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
       self?.channel?.invokeMethod("soundBack", arguments: nil)
@@ -161,6 +192,125 @@ final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate {
     guard bgTask != .invalid else { return }
     UIApplication.shared.endBackgroundTask(bgTask)
     bgTask = .invalid
+  }
+
+  // ---------------------------------------------------------------------------
+  // 📞 the class as an iPhone call (CallKit)
+  // ---------------------------------------------------------------------------
+  private func send(_ method: String, _ value: Any?) {
+    DispatchQueue.main.async { [weak self] in
+      self?.channel?.invokeMethod(method, arguments: value)
+    }
+  }
+
+  private func startClassCall(_ result: @escaping FlutterResult) {
+    classWanted = true
+    if classCallId != nil {
+      result(true)
+      return
+    }
+    _ = provider  // make sure iOS knows our call handler before asking
+    let id = UUID()
+    let handle = CXHandle(type: .generic, value: classTitle)
+    let start = CXStartCallAction(call: id, handle: handle)
+    start.isVideo = false
+    callController.request(CXTransaction(action: start)) { [weak self] error in
+      DispatchQueue.main.async {
+        guard let self = self else {
+          result(false)
+          return
+        }
+        if let error = error {
+          print("[LetsSpeak] class call could not start: \(error)")
+          result(false)
+          return
+        }
+        self.classCallId = id
+        self.classHeld = false
+        self.provider.reportOutgoingCall(with: id, startedConnectingAt: Date())
+        self.provider.reportOutgoingCall(with: id, connectedAt: Date())
+        let update = CXCallUpdate()
+        update.remoteHandle = handle
+        update.localizedCallerName = self.classTitle
+        update.hasVideo = false
+        update.supportsHolding = true
+        update.supportsGrouping = false
+        update.supportsUngrouping = false
+        update.supportsDTMF = false
+        self.provider.reportCall(with: id, updated: update)
+        result(true)
+      }
+    }
+  }
+
+  private func endClassCall() {
+    classWanted = false
+    guard let id = classCallId else { return }
+    callController.request(CXTransaction(action: CXEndCallAction(call: id))) { error in
+      if let error = error { print("[LetsSpeak] class call end: \(error)") }
+    }
+  }
+
+  /// other call finished → bring the class back (un-hold, or start it again)
+  private func resumeClassCall() {
+    guard classWanted else { return }
+    if phoneCalls.calls.contains(where: { !$0.hasEnded && $0.uuid != classCallId }) { return }
+    if let id = classCallId {
+      if classHeld {
+        callController.request(CXTransaction(action: CXSetHeldCallAction(call: id, onHold: false))) {
+          error in
+          if let error = error { print("[LetsSpeak] class un-hold: \(error)") }
+        }
+      }
+    } else {
+      startClassCall { _ in }
+    }
+  }
+
+  // CXCallObserverDelegate: any call started / answered / ended
+  func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
+    guard classWanted, call.uuid != classCallId, call.hasEnded else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+      self?.resumeClassCall()
+    }
+  }
+
+  // CXProviderDelegate
+  func providerDidReset(_ provider: CXProvider) {
+    classCallId = nil
+    classHeld = false
+    send("audioActive", false)
+  }
+
+  func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+    action.fulfill()
+  }
+
+  func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+    if action.callUUID == classCallId {
+      // ended by us (leave) or by iPhone ("End & Accept") → class waits for the call to finish
+      classCallId = nil
+      classHeld = false
+    }
+    action.fulfill()
+  }
+
+  func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
+    if action.callUUID == classCallId { classHeld = action.isOnHold }
+    action.fulfill()
+  }
+
+  func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+    action.fulfill()
+    if action.callUUID == classCallId { send("setMuted", action.isMuted) }
+  }
+
+  func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+    send("audioActive", true)  // iOS gave the sound to the class
+  }
+
+  func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+    send("audioActive", false)  // another call took the sound (class on hold)
   }
 
   // ---------------------------------------------------------------------------
@@ -227,21 +377,30 @@ final class ClassBridge: NSObject, AVPictureInPictureControllerDelegate {
     logo.layer.cornerRadius = 30
     logo.layer.borderWidth = 2
     logo.layer.borderColor = UIColor(red: 0, green: 0.62, blue: 0.62, alpha: 1).cgColor
-    let key = FlutterDartProject.lookupKey(forAsset: "assets/images/let'sspeak new logo with sir photo.png")
-    if let path = Bundle.main.path(forResource: key, ofType: nil) {
+    // Sir logo (ios/Runner/Assets.xcassets/ClassLogo), else the same picture from Flutter
+    if let img = UIImage(named: "ClassLogo") {
+      logo.image = img
+    } else {
+      let key = FlutterDartProject.lookupKey(forAsset: "assets/images/let'sspeak new logo with sir photo.png")
+      let path = Bundle.main.bundlePath + "/Frameworks/App.framework/" + key
       logo.image = UIImage(contentsOfFile: path)
+        ?? Bundle.main.path(forResource: key, ofType: nil).flatMap { UIImage(contentsOfFile: $0) }
     }
 
     let live = UILabel()
-    live.text = "🔴 LIVE CLASS"
+    live.text = "🔴 LIVE"
     live.textColor = .white
-    live.font = .systemFont(ofSize: 18, weight: .bold)
+    live.font = .systemFont(ofSize: 20, weight: .bold)
+    live.adjustsFontSizeToFitWidth = true
+    live.minimumScaleFactor = 0.6
 
     let speaking = UILabel()
     speaking.text = "Class is running"
     speaking.textColor = UIColor(red: 0.73, green: 0.83, blue: 0.9, alpha: 1)
     speaking.font = .systemFont(ofSize: 15)
     speaking.numberOfLines = 2
+    speaking.adjustsFontSizeToFitWidth = true
+    speaking.minimumScaleFactor = 0.7
 
     let mic = UILabel()
     mic.text = "🔇 Muted"

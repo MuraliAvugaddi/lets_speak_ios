@@ -43,6 +43,8 @@ import 'package:get_storage/get_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:lets_talk/apis/api_endpoint.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
+// 🍏 iPhone: "may the sound engine run?" (used with the iPhone call system)
+import 'package:livekit_client/src/audio/audio_engine_availability.dart' as lke;
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 /// Text of the Android "class is running" notification
@@ -129,6 +131,20 @@ class ClassPip {
       if (c.method == 'pipChanged') inPip.value = c.arguments == true;
       // 🍏 iPhone: a phone call / Siri / alarm stopped the class sound and now
       // it's over → put the class sound back (speaker / ear / Bluetooth + volume)
+      if (c.method == 'audioActive') {
+        await _ApplePhone.onAudio(c.arguments == true);
+      }
+      // 🔇 student pressed mute / unmute on the iPhone call screen
+      if (c.method == 'setMuted') {
+        final call = ClassSound._call;
+        final room = call?._room;
+        if (call != null && room != null && !call._inCall) {
+          try {
+            await room.localParticipant?.setMicrophoneEnabled(c.arguments != true);
+          } catch (_) {}
+          call._emitNow();
+        }
+      }
       if (c.method == 'soundBack') {
         final call = ClassSound._call;
         if (call != null && !call._inCall) {
@@ -433,6 +449,9 @@ class _AppleSound {
   static bool _manual = false;
 
   static Future<void> apply() async {
+    // class runs as an iPhone call but iOS hasn't given us the sound yet → wait
+    // (it is applied the moment iOS says "audio on")
+    if (_ApplePhone.active && !_ApplePhone.audioOn) return;
     final r = ClassSound.route.value;
     final ear = r == SoundOut.phone;
     final speaker = r == SoundOut.speaker;
@@ -458,11 +477,16 @@ class _AppleSound {
   }
 
   static Future<void> release() async {
-    if (!_manual) return;
+    final wasCall = _ApplePhone.active;
+    await _ApplePhone.end();
+    if (!_manual && !wasCall) return;
     _manual = false;
-    try {
-      await lk.AudioManager.instance.deactivateAudioSession();
-    } catch (_) {}
+    if (!wasCall) {
+      // (as an iPhone call, iOS switches the sound off itself)
+      try {
+        await lk.AudioManager.instance.deactivateAudioSession();
+      } catch (_) {}
+    }
     try {
       await lk.AudioManager.instance.setAudioSessionManagementMode(
         lk.AudioSessionManagementMode.automatic,
@@ -470,6 +494,83 @@ class _AppleSound {
     } catch (_) {}
   }
 }
+
+// -------------------------------------------------------------------------
+// 📞🍏 The class as an iPhone CALL (CallKit), like WhatsApp calls.
+// Why: iPhone silences every normal app the moment a phone rings. A "call" app
+// is different: a new call only shows "Decline / Hold & Accept" and the class
+// keeps playing while it rings. Answer → class waits (mic off). Call over →
+// the class comes back by itself.
+// If the iPhone refuses (very rare), the class simply runs like before.
+// -------------------------------------------------------------------------
+class _ApplePhone {
+  static bool active = false; // class is an iPhone call now
+  static bool audioOn = false; // iOS gave the sound to the class
+
+  static Future<void> _engine(bool on) async {
+    try {
+      await lk.AudioManager.instance.setEngineAvailability(
+        on ? lke.AudioEngineAvailability.defaultAvailability : lke.AudioEngineAvailability.none,
+      );
+    } catch (e) {
+      debugPrint('iPhone sound engine: $e');
+    }
+  }
+
+  static Future<void> begin() async {
+    if (!_isIOS || active) return;
+    ClassPip._wire(); // listen for "audio on / off" from iOS
+    try {
+      // LiveKit must not switch the sound on/off itself → the iPhone call does it
+      await lk.AudioManager.instance.setAudioSessionManagementMode(lk.AudioSessionManagementMode.manual);
+      await _engine(false);
+      final ok = await _Native._ch.invokeMethod<bool>('classCall', {'on': true, 'title': _bgTitleIos}) ?? false;
+      if (!ok) throw Exception('iPhone call refused');
+      active = true;
+      // safety: no sound from iOS within 5 s → run without the call system
+      Future.delayed(const Duration(seconds: 5), () async {
+        if (active && !audioOn) await _fallback();
+      });
+    } catch (e) {
+      debugPrint('Class as iPhone call: $e → normal mode');
+      await _fallback();
+    }
+  }
+
+  static Future<void> _fallback() async {
+    active = false;
+    audioOn = false;
+    try {
+      await _Native._ch.invokeMethod('classCall', {'on': false});
+    } catch (_) {}
+    await _engine(true);
+    await ClassSound._apply();
+    await ClassSound._call?._applyGain();
+  }
+
+  /// iOS: "audio on" (call active) / "audio off" (another call answered, class on hold)
+  static Future<void> onAudio(bool on) async {
+    if (!active) return;
+    audioOn = on;
+    await _engine(on);
+    if (on) {
+      await ClassSound._apply();
+      await ClassSound._call?._applyGain();
+    }
+  }
+
+  static Future<void> end() async {
+    if (!active) return;
+    active = false;
+    audioOn = false;
+    try {
+      await _Native._ch.invokeMethod('classCall', {'on': false});
+    } catch (_) {}
+    await _engine(true); // normal again for anything else in the app
+  }
+}
+
+const String _bgTitleIos = "Let's Speak • Live class";
 
 Future<void> _appleApply() => _AppleSound.apply();
 Future<void> _appleRelease() => _AppleSound.release();
@@ -727,6 +828,8 @@ class Call {
 
   // 🛟 join again by itself after the connection is lost
   bool _wantMic = false; // mic was on → switch it on again after rejoining
+  bool _over = false; // 🛑 really finished (ended / removed / gave up) — only then "disconnected"
+  Timer? _lostCheck;
   DateTime? _lostAt;
   int _tries = 0;
   Timer? _rejoinTimer;
@@ -828,6 +931,7 @@ class Call {
 
   Future<Result<void>> join({CallConnectOptions? connectOptions}) async {
     _left = false;
+    _over = false;
     _endedAt = null;
     _lostAt = null;
     _tries = 0;
@@ -836,12 +940,14 @@ class Call {
     _emitNow();
     _wantMic = connectOptions?.microphone.isOn ?? false;
     try {
+      await _ApplePhone.begin(); // 🍏 iPhone: class as a call (keeps playing while a phone rings)
       await _connect();
       _whenConnected();
       return Result.success<void>();
     } catch (e) {
       debugPrint('LiveKit join error: $e');
       await _closeRoom();
+      if (StreamVideo._active.isEmpty) await _ApplePhone.end(); // 🍏 no class → no iPhone call
       _status = CallStatus.disconnected;
       _emitNow();
       return Result.failure<void>(e);
@@ -1041,8 +1147,25 @@ class Call {
     _scheduleRejoin();
   }
 
+  /// Connection dropped but LiveKit didn't tell us why → start joining again
+  /// ourselves (2 s later, so a real "removed / ended" message wins first).
+  void _ensureRejoin() {
+    if (_left || _over || _endedAt != null || _rejoining) return;
+    if (_rejoinTimer?.isActive ?? false) return;
+    if (_lostCheck?.isActive ?? false) return;
+    _lostCheck = Timer(const Duration(seconds: 2), () {
+      final room = _room;
+      if (_left || _over || _endedAt != null || _rejoining) return;
+      if (_rejoinTimer?.isActive ?? false) return;
+      if (room != null && room.connectionState != lk.ConnectionState.disconnected) return;
+      _scheduleRejoin();
+    });
+  }
+
   /// Give up for good → screens close the class
   void _finish() {
+    _over = true;
+    _lostCheck?.cancel();
     _rejoinTimer?.cancel();
     _stopCallWatch();
     _life?.dispose();
@@ -1056,7 +1179,7 @@ class Call {
   }
 
   void _scheduleRejoin() {
-    if (_left || _endedAt != null) return;
+    if (_left || _over || _endedAt != null) return;
     final now = DateTime.now();
     _lostAt ??= now;
     if (now.difference(_lostAt!) > _giveUpAfter) {
@@ -1197,10 +1320,27 @@ class Call {
   // are almost silent. Trainer / admin / Surendra Sir are always heard fully.
   // ---------------------------------------------------------------------
   static const double _gateFloor =
-      0.08; // not speaking → ~ -22 dB (noise nearly gone)
+      0.2; // not speaking → quieter (noise much lower) but a soft voice is still heard
   static const Duration _gateHold = Duration(
-    milliseconds: 1500,
-  ); // keeps pauses between words
+    milliseconds: 3000,
+  ); // keeps pauses / thinking between words open
+  // 🗣 Only when MANY students have the mic on (3+). One or two students
+  // talking with the trainer (a doubt) are ALWAYS heard fully — never cut off.
+  static const int _gateFrom = 3;
+  bool _gateBusy = false;
+
+  void _checkGateBusy(lk.Room? room) {
+    if (room == null) return;
+    var mics = 0;
+    for (final p in room.remoteParticipants.values) {
+      if (!_alwaysHeard(p) && p.isMicrophoneEnabled()) mics++;
+    }
+    final busy = mics >= _gateFrom;
+    if (busy != _gateBusy) {
+      _gateBusy = busy;
+      unawaited(_applyGain());
+    }
+  }
   final Set<String> _gateOpen = <String>{};
   final Map<String, Timer> _gateTimers = <String, Timer>{};
 
@@ -1210,6 +1350,7 @@ class Call {
     if (_inCall)
       return 0.0; // 📞 in a phone call → class sound off on this phone
     if (_alwaysHeard(p)) return ClassSound.gain;
+    if (!_gateBusy) return ClassSound.studentGain; // 1–2 students talking → always clear
     return _gateOpen.contains(p.identity) ? ClassSound.studentGain : _gateFloor;
   }
 
@@ -1356,11 +1497,16 @@ class Call {
           if (!_status.isReconnecting) _status = CallStatus.connecting;
           break;
         case lk.ConnectionState.disconnected:
-          // our own rejoin is running → still "reconnecting", not the end
-          if (!_status.isIdle &&
-              !_status.isConnecting &&
-              !_status.isReconnecting) {
+          // 🐞 FIX "kicked out for no reason": the connection dropping is NOT the
+          // end of the class. Before, the screen saw "disconnected" for a moment
+          // and closed the class. Now it's "reconnecting" and the app joins again
+          // by itself. Only a real end (trainer ended / removed / gave up after
+          // 3 minutes) becomes "disconnected" (set in _finish).
+          if (_over) {
             _status = CallStatus.disconnected;
+          } else if (!_status.isIdle && !_status.isConnecting) {
+            _status = CallStatus.reconnecting;
+            _ensureRejoin();
           }
           break;
       }
@@ -1370,6 +1516,7 @@ class Call {
         room != null &&
         !_status.isDisconnected &&
         room.connectionState != lk.ConnectionState.disconnected;
+    _checkGateBusy(room); // 🤫 noise gate only when many mics are on
     ClassPip._update(this, room); // 📺 small window text
     state._set(
       CallState(

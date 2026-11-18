@@ -2040,7 +2040,11 @@ class _StudentAudioRoomScreenState extends State<StudentAudioRoomScreen>
                           AppColors.warning,
                         ),
                       // 🛟 connection lost → the app joins the class again by itself
-                      if (callState.status.isReconnecting)
+                      // 📞 on a phone / WhatsApp call → class waits (not an internet problem)
+                      if (widget.call.inPhoneCall)
+                        _banner(Icons.phone_in_talk_rounded,
+                            "You're on a phone call — the class will come back by itself after the call.", AppColors.navy)
+                      else if (callState.status.isReconnecting)
                         _banner(Icons.sync_rounded, "Connection lost — joining your class again…", Colors.orange.shade700)
                       else if (_isPoorConnection || (me?.weakNet ?? false))
                         _banner(Icons.signal_wifi_bad_rounded,
